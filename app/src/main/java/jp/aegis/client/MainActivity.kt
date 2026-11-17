@@ -1,37 +1,89 @@
 package jp.aegis.client
 
 import android.Manifest
-import android.app.Activity
-import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
+import android.graphics.Bitmap
 import android.location.LocationManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
-import android.view.View
-import android.widget.Button
-import android.widget.EditText
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.RadioGroup
-import android.widget.Switch
-import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
-// ===== 1. MainActivity (カードUI) =====
-class MainActivity : Activity() {
+// ===== テーマカラー (従来の View 版と同一の配色) =====
+private val BgColor = Color(0xFF0B1220)
+private val CardColor = Color(0xFF1B2436)
+private val CardAltColor = Color(0xFF232F4B)
+private val LabelAltColor = Color(0xFF212C42)
+private val TableHeaderColor = Color(0xFF2A3852)
+private val BodyTextColor = Color(0xFFD8DEE9)
+private val SecondaryTextColor = Color(0xFF9AA7BD)
+private val MutedTextColor = Color(0xFF8A94A6)
+private val AmberColor = Color(0xFFFFB454)
+
+private val AegisColorScheme = darkColorScheme(
+    primary = Color(0xFF7FA8E0),
+    onPrimary = Color.White,
+    background = BgColor,
+    onBackground = Color.White,
+    surface = CardColor,
+    onSurface = Color.White
+)
+
+// ===== 1. MainActivity (Jetpack Compose カードUI) =====
+class MainActivity : ComponentActivity() {
     companion object {
         private const val PREFS = "aegis_prefs"
         private const val KEY_MODE = "mode" // direct | server
@@ -44,26 +96,55 @@ class MainActivity : Activity() {
         private val DAY_COLS = intArrayOf(92, 0, 88, 62)
     }
 
-    private lateinit var container: LinearLayout
-    private lateinit var status: TextView
-    private lateinit var settingsPanel: View
-    private lateinit var modeGroup: RadioGroup
-    private lateinit var serverUrlInput: EditText
-    private lateinit var locNameInput: EditText
-    private lateinit var locLatInput: EditText
-    private lateinit var locLonInput: EditText
-    private lateinit var locPrefInput: EditText
-    private lateinit var locAreaInput: EditText
-    private var customLocList: LinearLayout? = null
-    // バックグラウンド同期・通知の設定コントロール
-    private lateinit var bgSyncSwitch: Switch
-    private lateinit var briefingNotifySwitch: Switch
-    private lateinit var syncIntervalGroup: RadioGroup
-    private lateinit var quakeThresholdGroup: RadioGroup
-    private lateinit var warnModeGroup: RadioGroup
-    private var bgSyncStatus: TextView? = null
-    private var notifyPermStatus: TextView? = null
-    private var currentTab = "briefing"
+    // ----- Compose が監視する UI 状態 -----
+    private var statusText by mutableStateOf("")
+    private var currentTab by mutableStateOf("briefing")
+    private var content by mutableStateOf<UiContent>(UiContent.Loading("読み込んでいます…"))
+    private var eewBodyText by mutableStateOf("")
+    private var demoMode by mutableStateOf(false)
+    private var radarLocIndex by mutableStateOf(0)
+    // 設定フォームの状態
+    private var modeSel by mutableStateOf("direct")
+    private var serverUrlText by mutableStateOf("")
+    private var locNameText by mutableStateOf("")
+    private var locLatText by mutableStateOf("")
+    private var locLonText by mutableStateOf("")
+    private var locPrefText by mutableStateOf("")
+    private var locAreaText by mutableStateOf("")
+    private var customLocs by mutableStateOf<List<AegisData.Location>>(emptyList())
+    private var bgSyncOn by mutableStateOf(false)
+    private var briefingNotifyOn by mutableStateOf(false)
+    private var intervalMin by mutableStateOf(30)
+    private var quakeThr by mutableStateOf(30)
+    private var warnModeSel by mutableStateOf(AegisData.WARN_MODE_ALERTS_ONLY)
+    private var bgSyncStatusText by mutableStateOf("")
+    private var notifyPermStatusText by mutableStateOf("")
+    private var gpsChoice by mutableStateOf<GpsChoice?>(null)
+
+    private data class GpsChoice(
+        val pref: AegisData.Pref,
+        val lat: Double,
+        val lon: Double,
+        val names: List<String>
+    )
+
+    private sealed interface UiContent {
+        data class Loading(val message: String) : UiContent
+        data class Cards(
+            val sections: List<AegisData.Section>,
+            val quakes: List<AegisData.Quake>
+        ) : UiContent
+        data class BriefingC(val briefing: AegisData.Briefing) : UiContent
+        data class QuakesC(
+            val sections: List<AegisData.Section>,
+            val quakes: List<AegisData.Quake>,
+            val eew: AegisData.EewInfo?,
+            val demo: Boolean
+        ) : UiContent
+        data class RadarC(val bitmap: Bitmap?, val caption: String) : UiContent
+        data class NewsC(val items: List<AegisData.NewsItem>) : UiContent
+    }
+
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     // 自動更新: 表示中は5分ごとに再取得する
@@ -85,20 +166,17 @@ class MainActivity : Activity() {
 
     // EEW 到達カウントダウン: 1秒ごとにカード本文を再描画する
     private var currentEew: AegisData.EewInfo? = null
-    private var eewBodyView: TextView? = null
     private val eewTick = Runnable { eewTickRun() }
 
     private fun eewTickRun() {
-        val bodyView = eewBodyView
-        val eew = currentEew
-        if (bodyView == null || eew == null) return
+        val eew = currentEew ?: return
         val now = System.currentTimeMillis()
         val locs = AegisData.effectiveLocations()
         if (AegisData.countdownActive(eew, locs, now)) {
-            bodyView.text = AegisData.eewCountdownBody(eew, locs, now)
+            eewBodyText = AegisData.eewCountdownBody(eew, locs, now)
             mainHandler.postDelayed(eewTick, 1000L)
         } else {
-            bodyView.text = AegisData.eewStaticBody(eew) // 通常の EEW 表示に戻す
+            eewBodyText = AegisData.eewStaticBody(eew) // 通常の EEW 表示に戻す
         }
     }
 
@@ -109,87 +187,27 @@ class MainActivity : Activity() {
 
     private fun stopEewTicker() {
         mainHandler.removeCallbacks(eewTick)
-        eewBodyView = null
         currentEew = null
     }
 
-    // レーダータブの状態
-    private var radarLocIndex = 0
-    private var radarImageView: ImageView? = null
-    private var radarCaptionView: TextView? = null
-
     // テスト表示 (デモ) の状態
-    private var demoMode = false
     private var demoEew: AegisData.EewInfo? = null
-
-    private fun dp(v: Int): Int {
-        return Math.round(v * resources.displayMetrics.density)
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-
-        container = findViewById(R.id.contentContainer)
-        status = findViewById(R.id.status)
-        settingsPanel = findViewById(R.id.settingsPanel)
-        modeGroup = findViewById(R.id.modeGroup)
-        serverUrlInput = findViewById(R.id.serverUrl)
 
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val mode = prefs.getString(KEY_MODE, "direct")
-        modeGroup.check(if ("server" == mode) R.id.modeServer else R.id.modeDirect)
-        serverUrlInput.setText(prefs.getString(KEY_SERVER, "http://10.0.2.2:8765"))
+        modeSel = prefs.getString(KEY_MODE, "direct") ?: "direct"
+        serverUrlText = prefs.getString(KEY_SERVER, "http://10.0.2.2:8765") ?: ""
 
-        locNameInput = findViewById(R.id.locName)
-        locLatInput = findViewById(R.id.locLat)
-        locLonInput = findViewById(R.id.locLon)
-        locPrefInput = findViewById(R.id.locPref)
-        locAreaInput = findViewById(R.id.locArea)
-        customLocList = findViewById(R.id.customLocList)
         loadCustomLocations()
-        val addLocation: Button = findViewById(R.id.addLocation)
-        addLocation.setOnClickListener { addCustomLocation() }
-
-        val tabBriefing: Button = findViewById(R.id.tabBriefing)
-        val tabQuakes: Button = findViewById(R.id.tabQuakes)
-        val tabRadar: Button = findViewById(R.id.tabRadar)
-        val tabNews: Button = findViewById(R.id.tabNews)
-        val tabSettings: Button = findViewById(R.id.tabSettings)
-        val refresh: Button = findViewById(R.id.refreshButton)
-        val saveSettings: Button = findViewById(R.id.saveSettings)
-        val testConnection: Button = findViewById(R.id.testConnection)
-        val gpsButton: Button = findViewById(R.id.gpsButton)
-        val diagTest: Button = findViewById(R.id.diagTest)
-        val demoTest: Button = findViewById(R.id.demoTest)
-
-        tabBriefing.setOnClickListener { showTab("briefing") }
-        tabQuakes.setOnClickListener { showTab("quakes") }
-        tabRadar.setOnClickListener { showTab("radar") }
-        tabNews.setOnClickListener { showTab("news") }
-        tabSettings.setOnClickListener { showTab("settings") }
-        refresh.setOnClickListener { loadCurrent() }
-        gpsButton.setOnClickListener { onGpsClicked() }
-        diagTest.setOnClickListener { runDiagnose() }
-        demoTest.setOnClickListener {
-            if (demoMode) disableDemo()
-            else enableDemo()
-        }
-        testConnection.setOnClickListener { testServer() }
-        saveSettings.setOnClickListener {
-            val m = if (modeGroup.checkedRadioButtonId == R.id.modeServer) "server" else "direct"
-            prefs.edit()
-                    .putString(KEY_MODE, m)
-                    .putString(KEY_SERVER, serverUrlInput.text.toString().trim())
-                    .apply()
-            status.text = "設定を保存しました（モード: " + (if ("server" == m) "AEGISサーバー" else "直接取得") + "）"
-            showTab("briefing")
-        }
-
         initNotificationSettings()
+
         AegisSync.ensureChannels(this)
         AegisSync.scheduleNextSync(this)
         AegisSync.scheduleBriefings(this)
+
+        setContent { AegisApp() }
 
         // 通知タップで開かれた場合は該当タブを初期表示にする
         val initialTab = intent?.getStringExtra(AegisSync.EXTRA_TAB)
@@ -210,7 +228,6 @@ class MainActivity : Activity() {
         if ("settings" == tab) {
             stopEewTicker()
             refreshSyncStatus()
-            settingsPanel.visibility = View.VISIBLE
             val sections = ArrayList<AegisData.Section>()
             sections.add(AegisData.Section("⚙ 設定について",
                     "・直接取得: スマホが P2P地震情報・気象庁・Open-Meteo から直接取ります（推奨）\n"
@@ -222,11 +239,10 @@ class MainActivity : Activity() {
                             + "表示中は5分ごとに自動更新されます（地震タブは30秒ごと）。\n"
                             + "バックグラウンド同期が ON の間は、アプリを閉じていても定期的に新しい地震・警報を確認して通知します。",
                     "info"))
-            render(sections, ArrayList())
-            status.text = "設定"
+            content = UiContent.Cards(sections, ArrayList())
+            statusText = "設定"
             return
         }
-        settingsPanel.visibility = View.GONE
         if ("quakes" == tab) {
             mainHandler.postDelayed(monitorTick, 30 * 1000L)
         }
@@ -235,14 +251,6 @@ class MainActivity : Activity() {
             return
         }
         loadCurrent()
-    }
-
-    // コンテナ内のカード類だけを取り除く (設定パネルはコンテナの子なので残す)
-    private fun clearContainer() {
-        for (i in container.childCount - 1 downTo 0) {
-            val child = container.getChildAt(i)
-            if (child !== settingsPanel) container.removeView(child)
-        }
     }
 
     // ----- 任意地点 (カスタム監視地点) -----
@@ -257,7 +265,7 @@ class MainActivity : Activity() {
             }
         } catch (e: Exception) {}
         AegisData.customLocations = list
-        renderCustomList()
+        customLocs = ArrayList(list)
     }
 
     private fun saveCustomLocations() {
@@ -270,70 +278,40 @@ class MainActivity : Activity() {
         } catch (e: Exception) {}
     }
 
-    private fun renderCustomList() {
-        val listView = customLocList ?: return
-        listView.removeAllViews()
-        val list = AegisData.customLocations
-        if (list.isEmpty()) {
-            val none = TextView(this)
-            none.text = "追加された地点はありません（高崎・大宮は標準で監視しています）"
-            none.setTextColor(Color.parseColor("#8A94A6"))
-            none.setTextSize(12f)
-            listView.addView(none)
-            return
-        }
-        for (i in list.indices) {
-            val idx = i
-            val l = list[i]
-            val row = LinearLayout(this)
-            row.orientation = LinearLayout.HORIZONTAL
-            row.gravity = Gravity.CENTER_VERTICAL
-            val label = TextView(this)
-            label.text = "📍 " + l.name + "（" + l.lat + ", " + l.lon + "）"
-            label.setTextColor(Color.WHITE)
-            label.setTextSize(13f)
-            label.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            val del = Button(this)
-            del.text = "削除"
-            del.setOnClickListener {
-                // 追加と同じく「コピー→差し替え」に統一する (共有リストのインプレース変更はしない)
-                val next = ArrayList(AegisData.customLocations)
-                if (idx < next.size) next.removeAt(idx)
-                AegisData.customLocations = next
-                saveCustomLocations()
-                renderCustomList()
-                status.text = "地点を削除しました"
-            }
-            row.addView(label)
-            row.addView(del)
-            listView.addView(row)
-        }
+    private fun deleteCustomLocation(idx: Int) {
+        // 追加と同じく「コピー→差し替え」に統一する (共有リストのインプレース変更はしない)
+        val next = ArrayList(AegisData.customLocations)
+        if (idx < next.size) next.removeAt(idx)
+        AegisData.customLocations = next
+        customLocs = ArrayList(next)
+        saveCustomLocations()
+        statusText = "地点を削除しました"
     }
 
     private fun addCustomLocation() {
-        val name = locNameInput.text.toString().trim()
-        val pref = locPrefInput.text.toString().trim()
-        val area = locAreaInput.text.toString().trim()
+        val name = locNameText.trim()
+        val pref = locPrefText.trim()
+        val area = locAreaText.trim()
         val lat: Double
         val lon: Double
         try {
-            lat = locLatInput.text.toString().trim().toDouble()
-            lon = locLonInput.text.toString().trim().toDouble()
+            lat = locLatText.trim().toDouble()
+            lon = locLonText.trim().toDouble()
         } catch (e: Exception) {
-            status.text = "緯度・経度は数値で入力してください"
+            statusText = "緯度・経度は数値で入力してください"
             return
         }
         if (name.isEmpty() || pref.isEmpty() || area.isEmpty()) {
-            status.text = "地点名・都道府県コード・地域名をすべて入力してください"
+            statusText = "地点名・都道府県コード・地域名をすべて入力してください"
             return
         }
         val list = ArrayList(AegisData.customLocations)
         list.add(AegisData.Location(name, lat, lon, pref, area))
         AegisData.customLocations = list
+        customLocs = ArrayList(list)
         saveCustomLocations()
-        renderCustomList()
-        locNameInput.setText("")
-        status.text = "地点「" + name + "」を追加しました。ブリーフィングに反映されます"
+        locNameText = ""
+        statusText = "地点「" + name + "」を追加しました。ブリーフィングに反映されます"
     }
 
     private var loadGeneration = 0 // 古い取得結果が新しい画面を上書きしないための世代番号
@@ -422,14 +400,9 @@ class MainActivity : Activity() {
         val gen = ++loadGeneration
         val cached = renderCache(key)
         val ct = if (cached) cacheTime(key) else null
-        status.text = if (cached) "キャッシュ" + (if (ct != null) "（" + ct + "時点）" else "") + "を表示中（更新中…）" else "取得中…"
+        statusText = if (cached) "キャッシュ" + (if (ct != null) "（" + ct + "時点）" else "") + "を表示中（更新中…）" else "取得中…"
         if (!cached) {
-            clearContainer()
-            val loading = TextView(this)
-            loading.text = "読み込んでいます…"
-            loading.setTextColor(Color.parseColor("#8A94A6"))
-            loading.setTextSize(14f)
-            container.addView(loading)
+            content = UiContent.Loading("読み込んでいます…")
         }
         executor.execute {
             val sections = ArrayList<AegisData.Section>()
@@ -480,70 +453,32 @@ class MainActivity : Activity() {
                     render(resultSections, resultQuakes)
                 }
                 saveCache(key, resultSections, resultQuakes)
-                status.text = if (failed) "⚠ 取得に失敗しました（通信状態を確認してください）"
+                statusText = if (failed) "⚠ 取得に失敗しました（通信状態を確認してください）"
                         else "最終更新: " + now + "（" + (if ("server" == mode) "サーバー" else "直接取得") + "）"
             }
         }
     }
 
-// ----- カード描画 -----
+// ----- 描画 (状態の差し替え) -----
 private fun render(sections: List<AegisData.Section>, quakes: List<AegisData.Quake>) {
-clearContainer()
-for (s in sections) container.addView(makeCard(s))
-for (q in quakes) container.addView(makeQuakeCard(q, false))
+content = UiContent.Cards(sections, quakes)
 }
 
 // 地震モニター用描画: EEWカウントダウンカードを最上部に固定し、最新の地震を大きく出す
 private fun renderQuakes(sections: List<AegisData.Section>, quakes: List<AegisData.Quake>, eew: AegisData.EewInfo?, demo: Boolean) {
-clearContainer()
 stopEewTicker()
 if (eew!= null &&!eew.isCancel) {
 currentEew = eew
-container.addView(makeEewCountdownCard(eew, demo))
-startEewTicker()
-} else if (eew!= null) {
-container.addView(makeCard(AegisData.Section("🚨 緊急地震速報", AegisData.eewStaticBody(eew), "info")))
+eewBodyText = AegisData.eewCountdownBody(eew, AegisData.effectiveLocations(), System.currentTimeMillis())
 }
-for (s in sections) container.addView(makeCard(s))
-for (i in quakes.indices) {
-container.addView(makeQuakeCard(quakes[i], i == 0))
-}
+content = UiContent.QuakesC(sections, quakes, eew, demo)
+if (eew!= null &&!eew.isCancel) startEewTicker()
 }
 
-// EEW カウントダウンカード (本文 TextView を保持し、1秒ごとに再描画する)
-private fun makeEewCountdownCard(eew: AegisData.EewInfo, demo: Boolean): View {
-val card = LinearLayout(this)
-card.orientation = LinearLayout.VERTICAL
-card.setPadding(dp(14), dp(12), dp(14), dp(12))
-card.background = cardBackground()
-card.layoutParams = cardParams()
-
-val titleRow = LinearLayout(this)
-titleRow.orientation = LinearLayout.HORIZONTAL
-titleRow.gravity = Gravity.CENTER_VERTICAL
-val dot = TextView(this)
-dot.text = "●"
-dot.setTextColor(levelColor("danger"))
-dot.setTextSize(11f)
-dot.setPadding(0, 0, dp(8), 0)
-val title = TextView(this)
-title.text = if (demo) "🚨 【テスト】緊急地震速報" else "🚨 緊急地震速報"
-title.setTextColor(Color.WHITE)
-title.setTextSize(16f)
-title.typeface = Typeface.DEFAULT_BOLD
-titleRow.addView(dot)
-titleRow.addView(title)
-card.addView(titleRow)
-
-val body = TextView(this)
-body.text = AegisData.eewCountdownBody(eew, AegisData.effectiveLocations(), System.currentTimeMillis())
-body.setTextColor(Color.parseColor("#D8DEE9"))
-body.setTextSize(15f)
-body.setLineSpacing(0f, 1.3f)
-body.setPadding(0, dp(6), 0, 0)
-card.addView(body)
-eewBodyView = body
-return card
+// ブリーフィング (直接取得) の描画: まとめ=ラベル行、天気=表、それ以外は通常カード
+private fun renderBriefing(b: AegisData.Briefing) {
+stopEewTicker()
+content = UiContent.BriefingC(b)
 }
 
 // 発生からの経過表示 (モニターの拡大カード用)
@@ -556,292 +491,6 @@ if (min < 60 * 24) return (min / 60).toString() + "時間" + (min % 60) + "分�
 return (min / (60 * 24)).toString() + "日前に発生"
 }
 
-private fun levelColor(level: String?): Int {
-return when (level?: "") {
-"danger" -> Color.parseColor("#FF6B6B")
-"warn" -> Color.parseColor("#FFB454")
-"ok" -> Color.parseColor("#58C184")
-else -> Color.parseColor("#7FA8E0")
-}
-}
-
-private fun cardParams(): LinearLayout.LayoutParams {
-val lp = LinearLayout.LayoutParams(
-LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-lp.bottomMargin = dp(10)
-return lp
-}
-
-private fun cardBackground(): GradientDrawable {
-val bg = GradientDrawable()
-bg.setColor(Color.parseColor("#1B2436"))
-bg.cornerRadius = dp(12).toFloat()
-return bg
-}
-
-// カードの外枠 (タイトル行つき) を作る
-private fun cardShell(title: String, level: String): LinearLayout {
-val card = LinearLayout(this)
-card.orientation = LinearLayout.VERTICAL
-card.setPadding(dp(14), dp(12), dp(14), dp(12))
-card.background = cardBackground()
-card.layoutParams = cardParams()
-
-val titleRow = LinearLayout(this)
-titleRow.orientation = LinearLayout.HORIZONTAL
-titleRow.gravity = Gravity.CENTER_VERTICAL
-val dot = TextView(this)
-dot.text = "●"
-dot.setTextColor(levelColor(level))
-dot.setTextSize(11f)
-dot.setPadding(0, 0, dp(8), 0)
-val titleView = TextView(this)
-titleView.text = title
-titleView.setTextColor(Color.WHITE)
-titleView.setTextSize(15f)
-titleView.typeface = Typeface.DEFAULT_BOLD
-titleRow.addView(dot)
-titleRow.addView(titleView)
-card.addView(titleRow)
-return card
-}
-
-private fun makeCard(s: AegisData.Section): View {
-val card = cardShell(s.title, s.level)
-val body = TextView(this)
-body.text = s.body
-body.setTextColor(Color.parseColor("#D8DEE9"))
-body.setTextSize(14f)
-body.setLineSpacing(0f, 1.3f)
-body.setPadding(0, dp(6), 0, 0)
-card.addView(body)
-return card
-}
-
-// ----- 表形式の描画ヘルパー -----
-// ラベル列を揃えた [ラベル | 値] 行。値が空の行は注記として小さく全文表示する
-private fun labelValueRow(label: String, value: String?, labelWidthDp: Int, alt: Boolean): View {
-if (value.isNullOrEmpty()) {
-val note = TextView(this)
-note.text = label
-note.setTextColor(Color.parseColor("#9AA7BD"))
-note.setTextSize(12f)
-note.setPadding(dp(2), dp(3), dp(2), dp(3))
-return note
-}
-val row = LinearLayout(this)
-row.orientation = LinearLayout.HORIZONTAL
-row.setPadding(dp(2), dp(4), dp(2), dp(4))
-if (alt) row.setBackgroundColor(Color.parseColor("#212C42"))
-val l = TextView(this)
-l.text = label
-l.setTextColor(Color.parseColor("#9AA7BD"))
-l.setTextSize(13f)
-l.typeface = Typeface.DEFAULT_BOLD
-l.layoutParams = LinearLayout.LayoutParams(dp(labelWidthDp), LinearLayout.LayoutParams.WRAP_CONTENT)
-row.addView(l)
-val v = TextView(this)
-v.text = value
-v.setTextColor(Color.parseColor("#D8DEE9"))
-v.setTextSize(13f)
-v.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-row.addView(v)
-return row
-}
-
-// 「ラベル：値」テキストをラベル列を揃えた行の集まりとしてカードに追加する
-private fun addLabelRows(card: LinearLayout, text: String?, labelWidthDp: Int) {
-if (text.isNullOrEmpty()) return
-val rows = AegisData.summaryRows(text)
-for (i in rows.indices) {
-card.addView(labelValueRow(rows[i][0], rows[i][1], labelWidthDp, i % 2 == 1))
-}
-}
-
-// 表の1行 (widths: dp指定、0 は残り幅いっぱいの可変列)。ヘッダー行と交互背景に対応
-private fun tableRow(cells: Array<String>, widths: IntArray, header: Boolean, rowIndex: Int): View {
-val row = LinearLayout(this)
-row.orientation = LinearLayout.HORIZONTAL
-row.gravity = Gravity.CENTER_VERTICAL
-row.setPadding(dp(8), dp(5), dp(8), dp(5))
-row.setBackgroundColor(if (header) Color.parseColor("#2A3852")
-else (if (rowIndex % 2 == 0) Color.parseColor("#1B2436") else Color.parseColor("#232F4B")))
-for (i in cells.indices) {
-val tv = TextView(this)
-tv.text = cells[i]
-tv.setTextSize(13f)
-tv.setTextColor(if (header) Color.WHITE else Color.parseColor("#D8DEE9"))
-if (header) tv.typeface = Typeface.DEFAULT_BOLD
-if (widths[i] > 0) {
-tv.layoutParams = LinearLayout.LayoutParams(dp(widths[i]), LinearLayout.LayoutParams.WRAP_CONTENT)
-} else {
-tv.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-}
-row.addView(tv)
-}
-return row
-}
-
-// 表内の日付見出し行
-private fun dateHeaderRow(date: String, weekday: String): View {
-val tv = TextView(this)
-tv.text = "📅 " + date + (if (weekday.isEmpty()) "" else "（" + weekday + "）")
-tv.setTextColor(Color.parseColor("#FFB454"))
-tv.setTextSize(12f)
-tv.typeface = Typeface.DEFAULT_BOLD
-tv.setPadding(dp(2), dp(8), dp(2), dp(3))
-return tv
-}
-
-// 表の小見出し
-private fun tableSubheading(text: String): View {
-val tv = TextView(this)
-tv.text = text
-tv.setTextColor(Color.parseColor("#9AA7BD"))
-tv.setTextSize(12f)
-tv.typeface = Typeface.DEFAULT_BOLD
-tv.setPadding(dp(2), dp(10), dp(2), dp(4))
-return tv
-}
-
-// 「📌 現在のまとめ」カード (ラベル列を揃えた行レイアウト)
-private fun makeSummaryCard(s: AegisData.Section): View {
-val card = cardShell(s.title, s.level)
-val rows = AegisData.summaryRows(s.body)
-for (i in rows.indices) {
-card.addView(labelValueRow(rows[i][0], rows[i][1], 108, i % 2 == 1))
-}
-return card
-}
-
-// 天気カード (ラベル行 + 時間別/週間/降水確率の表)
-private fun makeWeatherCard(w: AegisData.WeatherView): View {
-val card = cardShell("☀ 天気予報（" + w.loc.name + "）", w.level)
-addLabelRows(card, w.daysText, 84)
-addLabelRows(card, w.tempsText, 84)
-if (w.popRows.isNotEmpty()) {
-card.addView(tableSubheading("降水確率（気象庁・6時間ごと）"))
-card.addView(tableRow(arrayOf("時間帯", "降水確率"), POP_COLS, true, 0))
-var prevDate = ""
-var idx = 0
-for (r in w.popRows) {
-if (r.date!= prevDate) {
-card.addView(dateHeaderRow(r.date, r.weekday))
-prevDate = r.date
-}
-card.addView(tableRow(arrayOf(r.fromHour.toString() + "〜" + r.toHour + "時",
-if (r.pop < 0) "-%" else r.pop.toString() + "%"), POP_COLS, false, idx++))
-}
-}
-addLabelRows(card, w.currentText, 84)
-addLabelRows(card, w.tomorrowText, 84)
-if (w.hourRows.isNotEmpty()) {
-card.addView(tableSubheading("時間別予報（3時間ごと）"))
-card.addView(tableRow(arrayOf("時刻", "天気", "気温", "降水"), HOUR_COLS, true, 0))
-var prevDate = ""
-var idx = 0
-for (r in w.hourRows) {
-if (r.date!= prevDate) {
-card.addView(dateHeaderRow(r.date, r.weekday))
-prevDate = r.date
-}
-card.addView(tableRow(arrayOf(r.hour.toString() + "時", r.emoji + " " + r.desc,
-r.temp.toString() + "℃", if (r.pop < 0) "-%" else r.pop.toString() + "%"), HOUR_COLS, false, idx++))
-}
-}
-if (w.dayRows.isNotEmpty()) {
-card.addView(tableSubheading("週間予報"))
-card.addView(tableRow(arrayOf("日付", "天気", "気温", "降水"), DAY_COLS, true, 0))
-var idx = 0
-for (r in w.dayRows) {
-card.addView(tableRow(arrayOf(r.date + (if (r.weekday.isEmpty()) "" else "（" + r.weekday + "）"),
-r.emoji + " " + r.desc, r.minTemp.toString() + "〜" + r.maxTemp + "℃",
-if (r.pop < 0) "-%" else r.pop.toString() + "%"), DAY_COLS, false, idx++))
-}
-}
-if (w.warningText.isNotEmpty()) {
-val warn = TextView(this)
-warn.text = w.warningText
-warn.setTextColor(Color.parseColor("#FFB454"))
-warn.setTextSize(13f)
-warn.setLineSpacing(0f, 1.3f)
-warn.setPadding(0, dp(8), 0, 0)
-card.addView(warn)
-}
-return card
-}
-
-// ブリーフィング (直接取得) の描画: まとめ=ラベル行、天気=表、それ以外は通常カード
-private fun renderBriefing(b: AegisData.Briefing) {
-clearContainer()
-stopEewTicker()
-val sections = b.sections
-if (sections.isNotEmpty()) container.addView(makeSummaryCard(sections[0]))
-for (w in b.weathers) container.addView(makeWeatherCard(w))
-for (i in 1 + b.weathers.size until sections.size) {
-container.addView(makeCard(sections[i]))
-}
-}
-
-private fun makeQuakeCard(q: AegisData.Quake, big: Boolean): View {
-val card = LinearLayout(this)
-card.orientation = LinearLayout.HORIZONTAL
-card.gravity = Gravity.CENTER_VERTICAL
-card.setPadding(dp(12), dp(if (big) 16 else 10), dp(12), dp(if (big) 16 else 10))
-card.background = cardBackground()
-card.layoutParams = cardParams()
-
-val badge = TextView(this)
-badge.text = "震度" + AegisData.scaleToStr(q.maxScale)
-badge.setTextColor(Color.WHITE)
-badge.setTextSize(if (big) 17f else 13f)
-badge.typeface = Typeface.DEFAULT_BOLD
-badge.gravity = Gravity.CENTER
-val badgeBg = GradientDrawable()
-badgeBg.setColor(scaleColor(q.maxScale))
-badgeBg.cornerRadius = dp(8).toFloat()
-badge.background = badgeBg
-badge.setPadding(dp(10), dp(6), dp(10), dp(6))
-card.addView(badge)
-
-val texts = LinearLayout(this)
-texts.orientation = LinearLayout.VERTICAL
-texts.setPadding(dp(12), 0, 0, 0)
-val place = TextView(this)
-place.text = q.place
-place.setTextColor(Color.WHITE)
-place.setTextSize(if (big) 19f else 15f)
-place.typeface = Typeface.DEFAULT_BOLD
-val detail = TextView(this)
-detail.text = q.detail
-detail.setTextColor(Color.parseColor("#9AA7BD"))
-detail.setTextSize(if (big) 14f else 12f)
-detail.setPadding(0, dp(2), 0, 0)
-texts.addView(place)
-texts.addView(detail)
-if (big) {
-val elapsed = elapsedText(q.originMillis)
-if (elapsed.isNotEmpty()) {
-val el = TextView(this)
-el.text = "⏱ " + elapsed
-el.setTextColor(Color.parseColor("#FFB454"))
-el.setTextSize(13f)
-el.setPadding(0, dp(3), 0, 0)
-texts.addView(el)
-}
-}
-texts.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-card.addView(texts)
-if (q.lat!= 0.0 || q.lon!= 0.0) {
-val mapBtn = Button(this)
-mapBtn.text = "🗺 地図"
-mapBtn.setTextSize(12f)
-mapBtn.setOnClickListener { openQuakeMap(q)}
-card.addView(mapBtn)
-}
-return card
-}
-
 // 震源を地図アプリで開く (なければブラウザで OpenStreetMap)
 private fun openQuakeMap(q: AegisData.Quake) {
 val label = "震源: " + q.place
@@ -852,16 +501,8 @@ startActivity(intent)
 } catch (e: Exception) {
 val web = Uri.parse("https://www.openstreetmap.org/?mlat=" + q.lat + "&mlon=" + q.lon + "#map=8/" + q.lat + "/" + q.lon)
 try { startActivity(Intent(Intent.ACTION_VIEW, web))}
-catch (e2: Exception) { status.text = "地図を開けませんでした"}
+catch (e2: Exception) { statusText = "地図を開けませんでした"}
 }
-}
-
-private fun scaleColor(scale: Int): Int {
-if (scale >= 45) return Color.parseColor("#C93A3A") // 5弱以上: 赤
-if (scale >= 40) return Color.parseColor("#D97A2B") // 4: オレンジ
-if (scale >= 30) return Color.parseColor("#A8871D") // 3: 黄土
-if (scale >= 20) return Color.parseColor("#3E6B9E") // 2: 青
-return Color.parseColor("#54687F") // 1: グレー青
 }
 
 // ----- レーダータブ -----
@@ -870,95 +511,34 @@ stopEewTicker()
 val locs = AegisData.effectiveLocations()
 if (radarLocIndex >= locs.size) radarLocIndex = 0
 val loc = locs[radarLocIndex]
-renderRadarShell(locs)
-status.text = "レーダーを取得中…（" + loc.name + "）"
+content = UiContent.RadarC(null, "読み込んでいます…")
+statusText = "レーダーを取得中…（" + loc.name + "）"
 val gen = ++loadGeneration
 executor.execute {
 try {
 val img = AegisData.radarImage(loc)
 val now = SimpleDateFormat("HH:mm:ss", Locale.JAPAN).format(Date())
 mainHandler.post {
-val iv = radarImageView
-val cv = radarCaptionView
-if (gen!= loadGeneration || iv == null || cv == null) return@post
-iv.setImageBitmap(img.bitmap)
-cv.text = loc.name + " 周辺\n" + img.caption
-status.text = "最終更新: " + now + "（レーダー）"
+if (gen!= loadGeneration) return@post
+content = UiContent.RadarC(img.bitmap, loc.name + " 周辺\n" + img.caption)
+statusText = "最終更新: " + now + "（レーダー）"
 }
 } catch (e: Exception) {
 val msg = "レーダーを取得できませんでした：" + AegisData.friendlyError(e)
 mainHandler.post {
-val cv = radarCaptionView
-if (gen!= loadGeneration || cv == null) return@post
-cv.text = msg + "\n通信状態を確認して、更新ボタンで再試行してください。"
-status.text = "⚠ レーダーの取得に失敗しました"
+if (gen!= loadGeneration) return@post
+content = UiContent.RadarC(null, msg + "\n通信状態を確認して、更新ボタンで再試行してください。")
+statusText = "⚠ レーダーの取得に失敗しました"
 }
 }
 }
-}
-
-// 地点切替チップ + 画像エリア + キャプションの枠を描く
-private fun renderRadarShell(locs: Array<AegisData.Location>) {
-clearContainer()
-val head = LinearLayout(this)
-head.orientation = LinearLayout.VERTICAL
-head.setPadding(dp(14), dp(12), dp(14), dp(12))
-head.background = cardBackground()
-head.layoutParams = cardParams()
-val title = TextView(this)
-title.text = "🌧 気象レーダー"
-title.setTextColor(Color.WHITE)
-title.setTextSize(15f)
-title.typeface = Typeface.DEFAULT_BOLD
-head.addView(title)
-val chips = LinearLayout(this)
-chips.orientation = LinearLayout.HORIZONTAL
-chips.setPadding(0, dp(8), 0, 0)
-for (i in locs.indices) {
-val idx = i
-val chip = Button(this)
-chip.text = locs[i].name
-chip.setTextSize(12f)
-if (i == radarLocIndex) chip.setTextColor(Color.parseColor("#FFB454"))
-chip.setOnClickListener {
-radarLocIndex = idx
-loadRadar()
-}
-chips.addView(chip)
-}
-val scroll = android.widget.HorizontalScrollView(this)
-scroll.addView(chips)
-head.addView(scroll)
-container.addView(head)
-
-val imageView = ImageView(this)
-imageView.adjustViewBounds = true
-imageView.scaleType = ImageView.ScaleType.FIT_CENTER
-val ip = LinearLayout.LayoutParams(
-LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-ip.bottomMargin = dp(8)
-imageView.layoutParams = ip
-container.addView(imageView)
-radarImageView = imageView
-
-val captionView = TextView(this)
-captionView.text = "読み込んでいます…"
-captionView.setTextColor(Color.parseColor("#9AA7BD"))
-captionView.setTextSize(12f)
-container.addView(captionView)
-radarCaptionView = captionView
 }
 
 // ----- ニュースタブ -----
 private fun loadNews() {
 stopEewTicker()
-clearContainer()
-val loading = TextView(this)
-loading.text = "ニュースを取得中…"
-loading.setTextColor(Color.parseColor("#8A94A6"))
-loading.setTextSize(14f)
-container.addView(loading)
-status.text = "取得中…"
+content = UiContent.Loading("ニュースを取得中…")
+statusText = "取得中…"
 val gen = ++loadGeneration
 executor.execute {
 try {
@@ -966,8 +546,14 @@ val items = AegisData.newsItems()
 val now = SimpleDateFormat("HH:mm:ss", Locale.JAPAN).format(Date())
 mainHandler.post {
 if (gen!= loadGeneration) return@post
-renderNews(items)
-status.text = "最終更新: " + now + "（NHKニュース）"
+if (items.isEmpty()) {
+val sections = ArrayList<AegisData.Section>()
+sections.add(AegisData.Section("📰 ニュース", "表示できるニュースがありません。", "info"))
+render(sections, ArrayList())
+} else {
+content = UiContent.NewsC(items)
+}
+statusText = "最終更新: " + now + "（NHKニュース）"
 }
 } catch (e: Exception) {
 mainHandler.post {
@@ -976,54 +562,9 @@ val sections = ArrayList<AegisData.Section>()
 sections.add(AegisData.Section("⚠ 取得エラー",
 "ニュースを取得できませんでした：" + AegisData.friendlyError(e) + "\n\n通信状態を確認してください。", "warn"))
 render(sections, ArrayList())
-status.text = "⚠ ニュースの取得に失敗しました"
+statusText = "⚠ ニュースの取得に失敗しました"
 }
 }
-}
-}
-
-private fun renderNews(items: List<AegisData.NewsItem>) {
-clearContainer()
-val head = TextView(this)
-head.text = "📰 防災・主要ニュース（NHK）— タップで記事を開きます"
-head.setTextColor(Color.parseColor("#8A94A6"))
-head.setTextSize(12f)
-head.setPadding(0, 0, 0, dp(8))
-container.addView(head)
-for (n in items) {
-val card = LinearLayout(this)
-card.orientation = LinearLayout.VERTICAL
-card.setPadding(dp(14), dp(12), dp(14), dp(12))
-card.background = cardBackground()
-card.layoutParams = cardParams()
-val title = TextView(this)
-title.text = (if (n.timeText.isEmpty()) "" else n.timeText + "　") + n.title
-title.setTextColor(Color.WHITE)
-title.setTextSize(15f)
-title.typeface = Typeface.DEFAULT_BOLD
-card.addView(title)
-if (n.summary.isNotEmpty()) {
-val summary = TextView(this)
-summary.text = n.summary
-summary.setTextColor(Color.parseColor("#D8DEE9"))
-summary.setTextSize(13f)
-summary.setLineSpacing(0f, 1.3f)
-summary.setPadding(0, dp(5), 0, 0)
-card.addView(summary)
-}
-card.setOnClickListener {
-try {
-startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(n.link)))
-} catch (e: Exception) {
-status.text = "記事を開けませんでした"
-}
-}
-container.addView(card)
-}
-if (items.isEmpty()) {
-val sections = ArrayList<AegisData.Section>()
-sections.add(AegisData.Section("📰 ニュース", "表示できるニュースがありません。", "info"))
-render(sections, ArrayList())
 }
 }
 
@@ -1032,7 +573,7 @@ private var gpsListener: GpsListener? = null
 private val gpsTimeout = Runnable {
 if (gpsListener!= null) {
 stopGpsUpdates()
-status.text = "現在地を取得できませんでした（タイムアウト）。電波の良い場所で再試行してください"
+statusText = "現在地を取得できませんでした（タイムアウト）。電波の良い場所で再試行してください"
 }
 }
 
@@ -1059,7 +600,7 @@ override fun onProviderDisabled(provider: String) {}
 private fun onGpsClicked() {
 if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!= PackageManager.PERMISSION_GRANTED
 && checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)!= PackageManager.PERMISSION_GRANTED) {
-status.text = "位置情報の許可が必要です"
+statusText = "位置情報の許可が必要です"
 requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), REQ_LOCATION)
 return
 }
@@ -1070,7 +611,7 @@ override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<Str
 super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 if (requestCode == REQ_NOTIFY) {
 refreshSyncStatus()
-status.text = if (AegisSync.notificationsAllowed(this))
+statusText = if (AegisSync.notificationsAllowed(this))
 "通知が許可されました" else "通知は許可されませんでした（端末の設定から許可できます）"
 return
 }
@@ -1078,14 +619,14 @@ if (requestCode!= REQ_LOCATION) return
 var granted = false
 for (g in grantResults) if (g == PackageManager.PERMISSION_GRANTED) granted = true
 if (granted) fetchGpsLocation()
-else status.text = "位置情報の許可が得られなかったため、現在地を登録できません"
+else statusText = "位置情報の許可が得られなかったため、現在地を登録できません"
 }
 
 private fun fetchGpsLocation() {
-status.text = "現在地を取得中…"
+statusText = "現在地を取得中…"
 val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager?
 if (lm == null) {
-status.text = "位置情報サービスを利用できません"
+statusText = "位置情報サービスを利用できません"
 return
 }
 var best: android.location.Location? = null
@@ -1109,12 +650,12 @@ lm.requestSingleUpdate(LocationManager.GPS_PROVIDER, listener, Looper.getMainLoo
 lm.requestSingleUpdate(LocationManager.NETWORK_PROVIDER, listener, Looper.getMainLooper())
 } else {
 stopGpsUpdates()
-status.text = "位置情報が無効です。端末の設定で位置情報を有効にしてください"
+statusText = "位置情報が無効です。端末の設定で位置情報を有効にしてください"
 return
 }
 } catch (e: SecurityException) {
 stopGpsUpdates()
-status.text = "位置情報の許可が得られなかったため、現在地を登録できません"
+statusText = "位置情報の許可が得られなかったため、現在地を登録できません"
 return
 }
 mainHandler.postDelayed(gpsTimeout, 15000L)
@@ -1126,7 +667,7 @@ stopGpsUpdates()
 val lat = fix.latitude
 val lon = fix.longitude
 val pref = AegisData.nearestPref(lat, lon)
-status.text = "現在地を取得しました（都道府県は " + pref.name + " と推定）。地域を取得中…"
+statusText = "現在地を取得しました（都道府県は " + pref.name + " と推定）。地域を取得中…"
 executor.execute {
 var names: List<String> = ArrayList()
 try { names = AegisData.forecastAreaNames(pref.code)}
@@ -1135,19 +676,10 @@ val result = names
 mainHandler.post {
 if (isFinishing || isDestroyed) return@post // 画面が閉じていたらダイアログを出さない
 if (result.isEmpty()) {
-status.text = "地域区分を取得できなかったため、現在地を登録できませんでした"
+statusText = "地域区分を取得できなかったため、現在地を登録できませんでした"
 return@post
 }
-try {
-val items = Array<CharSequence>(result.size) { i -> result[i]}
-AlertDialog.Builder(this@MainActivity)
-.setTitle(pref.name + " の地域区分を選択")
-.setItems(items) { _, which ->
-registerGpsLocation(pref, lat, lon, result[which])
-}
-.setNegativeButton("キャンセル", null)
-.show()
-} catch (e: Exception) {}
+gpsChoice = GpsChoice(pref, lat, lon, result)
 }
 }
 }
@@ -1156,16 +688,16 @@ private fun registerGpsLocation(pref: AegisData.Pref, lat: Double, lon: Double, 
 val list = ArrayList(AegisData.customLocations)
 list.add(AegisData.Location("現在地（" + areaName + "）", lat, lon, pref.code, areaName))
 AegisData.customLocations = list
+customLocs = ArrayList(list)
 saveCustomLocations()
-renderCustomList()
-status.text = "現在地（" + areaName + " / " + pref.name + "）を登録しました。ブリーフィングに反映されます"
+statusText = "現在地（" + areaName + " / " + pref.name + "）を登録しました。ブリーフィングに反映されます"
 }
 
 // ----- 接続テスト (自己診断) -----
 private fun runDiagnose() {
-val serverMode = modeGroup.checkedRadioButtonId == R.id.modeServer
-val server = serverUrlInput.text.toString().trim()
-status.text = "接続テスト中…（各データソースへ実際にリクエストしています）"
+val serverMode = modeSel == "server"
+val server = serverUrlText.trim()
+statusText = "接続テスト中…（各データソースへ実際にリクエストしています）"
 executor.execute {
 val lines = AegisData.diagnose(serverMode, server)
 val body = StringBuilder()
@@ -1183,7 +715,7 @@ val sections = ArrayList<AegisData.Section>()
 sections.add(AegisData.Section("🩺 接続テスト結果（" + summary + "）", resultBody,
 if (allOk) "ok" else "warn"))
 render(sections, ArrayList())
-status.text = "接続テスト完了: " + summary
+statusText = "接続テスト完了: " + summary
 }
 }
 }
@@ -1193,14 +725,14 @@ private fun enableDemo() {
 demoMode = true
 val start = System.currentTimeMillis()
 demoEew = buildDemoEew(start)
-status.text = "テスト表示中（サンプルデータです。実際の警報ではありません）"
+statusText = "テスト表示中（サンプルデータです。実際の警報ではありません）"
 showTab("briefing")
 }
 
 private fun disableDemo() {
 demoMode = false
 demoEew = null
-status.text = "テスト表示を終了しました"
+statusText = "テスト表示を終了しました"
 if ("briefing" == currentTab || "quakes" == currentTab) {
 loadCurrent()
 } else {
@@ -1226,13 +758,10 @@ return info
 
 private fun renderDemo(tab: String) {
 stopEewTicker()
-val endBtn = Button(this)
-endBtn.text = "テスト表示を終了"
-endBtn.setOnClickListener { disableDemo()}
 if ("quakes" == tab) {
 val sections = ArrayList<AegisData.Section>()
 sections.add(demoBanner())
-sections.add(AegisData.Section("🌊 【テスト】津波情報", "津波の心配はありません（サンプル）。", "ok"))
+sections.add(AegisData.Section("🌊 津波情報", "津波の心配はありません（サンプル）。", "ok"))
 val quakes = ArrayList<AegisData.Quake>()
 val now = System.currentTimeMillis()
 quakes.add(AegisData.Quake("テスト震源（サンプル）",
@@ -1242,22 +771,20 @@ quakes.add(AegisData.Quake("サンプル震源2",
 SimpleDateFormat("MM/dd HH:mm", Locale.JAPAN).format(Date(now - 42 * 60000L)) + "発生 / M4.6 / 深さ約60km / 津波の心配なし",
 "MEDIUM", 30, 35.60, 140.10, now - 42 * 60000L))
 renderQuakes(sections, quakes, demoEew, true)
-container.addView(endBtn, 0)
 } else {
 val sections = ArrayList<AegisData.Section>()
 sections.add(demoBanner())
-sections.add(AegisData.Section("📌 【テスト】現在のまとめ",
+sections.add(AegisData.Section("📌 現在のまとめ",
 "⚠ 発表中：大雨警報\n🌊 津波: なし\n🌏 最新の地震: 震度5弱 テスト震源（サンプル）\n☀ 高崎: 雨", "warn"))
-sections.add(AegisData.Section("☀ 【テスト】天気予報（高崎）",
+sections.add(AegisData.Section("☀ 天気予報（高崎）",
 "今日： 雨\n⚠ 発表中： 大雨警報（11/17 12:00発表）\n　大雨による土砂災害に警戒してください（サンプル文）。", "warn"))
-sections.add(AegisData.Section("🚨 【テスト】緊急地震速報",
+sections.add(AegisData.Section("🚨 緊急地震速報",
 AegisData.eewStaticBody(demoEew!!), "danger"))
-sections.add(AegisData.Section("🌏 【テスト】最新の地震（1件）",
+sections.add(AegisData.Section("🌏 最新の地震（1件）",
 "🟠 震度5弱 テスト震源（サンプル）", "info"))
 render(sections, ArrayList())
-container.addView(endBtn, 0)
 }
-status.text = "テスト表示中（サンプルデータです。実際の警報ではありません）"
+statusText = "テスト表示中（サンプルデータです。実際の警報ではありません）"
 }
 
 private fun demoBanner(): AegisData.Section {
@@ -1268,10 +795,10 @@ return AegisData.Section("🧪 テスト表示中",
 
 // 設定タブの接続テスト: 入力中のURLで /api/history を叩いて結果を表示する
 private fun testServer() {
-var base = serverUrlInput.text.toString().trim()
+var base = serverUrlText.trim()
 if (base.endsWith("/")) base = base.substring(0, base.length - 1)
 val url = base + "/api/history"
-status.text = "接続テスト中… " + url
+statusText = "接続テスト中… " + url
 executor.execute {
 var msg: String
 try {
@@ -1281,84 +808,86 @@ msg = "✅ 接続OK: " + url + "（応答 " + body.length + " 文字）"
 msg = "❌ 接続失敗: " + AegisData.friendlyError(e) + "（サーバー起動とURL・同一Wi-Fiを確認）"
 }
 val result = msg
-mainHandler.post { status.text = result}
+mainHandler.post { statusText = result}
 }
 }
 
 // ----- バックグラウンド同期・通知の設定 -----
 private fun initNotificationSettings() {
-bgSyncSwitch = findViewById(R.id.bgSyncSwitch)
-briefingNotifySwitch = findViewById(R.id.briefingNotifySwitch)
-syncIntervalGroup = findViewById(R.id.syncIntervalGroup)
-quakeThresholdGroup = findViewById(R.id.quakeThresholdGroup)
-warnModeGroup = findViewById(R.id.warnModeGroup)
-bgSyncStatus = findViewById(R.id.bgSyncStatus)
-notifyPermStatus = findViewById(R.id.notifyPermStatus)
-val notifyPermButton: Button = findViewById(R.id.notifyPermButton)
-val notifyTest: Button = findViewById(R.id.notifyTest)
+// 現在の設定を Compose 状態へ反映する (副作用は各コントロールの変更時に実行)
+bgSyncOn = AegisSync.isBgSyncEnabled(this)
+briefingNotifyOn = AegisSync.isBriefingEnabled(this)
+intervalMin = AegisSync.intervalMinutes(this)
+quakeThr = AegisSync.quakeThresholdScale(this)
+warnModeSel = AegisSync.warnMode(this)
+refreshSyncStatus()
+}
 
-// 現在の設定を反映してからリスナーを付ける (初期反映でリスナーが発火しないように)
-bgSyncSwitch.isChecked = AegisSync.isBgSyncEnabled(this)
-briefingNotifySwitch.isChecked = AegisSync.isBriefingEnabled(this)
-val minutes = AegisSync.intervalMinutes(this)
-syncIntervalGroup.check(if (minutes == 15) R.id.interval15 else if (minutes == 60) R.id.interval60 else R.id.interval30)
-val thr = AegisSync.quakeThresholdScale(this)
-quakeThresholdGroup.check(if (thr == 10) R.id.thrScale10 else if (thr == 20) R.id.thrScale20
-else if (thr == 40) R.id.thrScale40 else if (thr == 45) R.id.thrScale45 else R.id.thrScale30)
-warnModeGroup.check(if (AegisSync.warnMode(this) == AegisData.WARN_MODE_INCLUDE_ADVISORY)
-R.id.warnIncludeAdvisory else R.id.warnAlertsOnly)
+private fun saveModeSettings() {
+val m = modeSel
+getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+.putString(KEY_MODE, m)
+.putString(KEY_SERVER, serverUrlText.trim())
+.apply()
+statusText = "設定を保存しました（モード: " + (if ("server" == m) "AEGISサーバー" else "直接取得") + "）"
+showTab("briefing")
+}
 
-bgSyncSwitch.setOnCheckedChangeListener { _, checked ->
+private fun onBgSyncChanged(checked: Boolean) {
+bgSyncOn = checked
 AegisSync.setBgSyncEnabled(this, checked)
 AegisSync.scheduleNextSync(this)
 refreshSyncStatus()
-status.text = if (checked) "バックグラウンド同期を ON にしました" else "バックグラウンド同期を OFF にしました"
+statusText = if (checked) "バックグラウンド同期を ON にしました" else "バックグラウンド同期を OFF にしました"
 }
-briefingNotifySwitch.setOnCheckedChangeListener { _, checked ->
+
+private fun onBriefingNotifyChanged(checked: Boolean) {
+briefingNotifyOn = checked
 AegisSync.setBriefingEnabled(this, checked)
 AegisSync.scheduleBriefings(this)
-status.text = if (checked) "朝夕ブリーフィング通知を ON にしました（7:00 / 21:00）"
+statusText = if (checked) "朝夕ブリーフィング通知を ON にしました（7:00 / 21:00）"
 else "朝夕ブリーフィング通知を OFF にしました"
 }
-syncIntervalGroup.setOnCheckedChangeListener { _, checkedId ->
-val m = if (checkedId == R.id.interval15) 15 else if (checkedId == R.id.interval60) 60 else 30
-AegisSync.setIntervalMinutes(this, m)
+
+private fun onIntervalChanged(minutes: Int) {
+intervalMin = minutes
+AegisSync.setIntervalMinutes(this, minutes)
 AegisSync.scheduleNextSync(this)
 refreshSyncStatus()
 }
-quakeThresholdGroup.setOnCheckedChangeListener { _, checkedId ->
-val s = if (checkedId == R.id.thrScale10) 10 else if (checkedId == R.id.thrScale20) 20
-else if (checkedId == R.id.thrScale40) 40 else if (checkedId == R.id.thrScale45) 45 else 30
-AegisSync.setQuakeThresholdScale(this, s)
-status.text = "地震の通知しきい値を震度" + AegisData.scaleToStr(s) + "以上にしました"
+
+private fun onQuakeThresholdChanged(scale: Int) {
+quakeThr = scale
+AegisSync.setQuakeThresholdScale(this, scale)
+statusText = "地震の通知しきい値を震度" + AegisData.scaleToStr(scale) + "以上にしました"
 }
-warnModeGroup.setOnCheckedChangeListener { _, checkedId ->
-AegisSync.setWarnMode(this, if (checkedId == R.id.warnIncludeAdvisory)
-AegisData.WARN_MODE_INCLUDE_ADVISORY else AegisData.WARN_MODE_ALERTS_ONLY)
-status.text = "警報の通知範囲を保存しました"
+
+private fun onWarnModeChanged(mode: Int) {
+warnModeSel = mode
+AegisSync.setWarnMode(this, mode)
+statusText = "警報の通知範囲を保存しました"
 }
-notifyPermButton.setOnClickListener {
+
+private fun onNotifyPermClicked() {
 if (android.os.Build.VERSION.SDK_INT >= 33) {
 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFY)
 } else {
-status.text = "この端末（Android 12以下）では通知の許可リクエストは不要です"
+statusText = "この端末（Android 12以下）では通知の許可リクエストは不要です"
 refreshSyncStatus()
 }
 }
-notifyTest.setOnClickListener {
+
+private fun onNotifyTestClicked() {
 if (AegisSync.postTestNotification(this)) {
-status.text = "テスト通知を出しました（通知欄を確認してください）"
+statusText = "テスト通知を出しました（通知欄を確認してください）"
 } else {
-status.text = "通知が許可されていないため、テスト通知を出せませんでした"
+statusText = "通知が許可されていないため、テスト通知を出せませんでした"
 refreshSyncStatus()
 }
-}
-refreshSyncStatus()
 }
 
 // 設定画面の同期・許可状態表示を最新にする
 private fun refreshSyncStatus() {
-val syncStatus = bgSyncStatus?: return
 val sb = StringBuilder("バックグラウンド同期: ")
 if (AegisSync.isBgSyncEnabled(this)) {
 sb.append("ON（").append(AegisSync.intervalMinutes(this)).append("分間隔）")
@@ -1371,13 +900,10 @@ sb.append(" / 最終同期 ").append(SimpleDateFormat("M/d HH:mm", Locale.JAPAN)
 } else {
 sb.append(" / 最終同期 まだありません")
 }
-syncStatus.text = sb.toString()
-val permStatus = notifyPermStatus
-if (permStatus!= null) {
-permStatus.text = if (AegisSync.notificationsAllowed(this))
+bgSyncStatusText = sb.toString()
+notifyPermStatusText = if (AegisSync.notificationsAllowed(this))
 "通知の許可: 許可済み"
 else "通知の許可: 未許可（下のボタン、または端末の設定で許可してください）"
-}
 }
 
 override fun onResume() {
@@ -1388,7 +914,7 @@ if ("quakes" == currentTab) {
 mainHandler.removeCallbacks(monitorTick)
 mainHandler.postDelayed(monitorTick, 30 * 1000L)
 }
-if (currentEew!= null && eewBodyView!= null) startEewTicker()
+if (currentEew!= null) startEewTicker()
 }
 
 override fun onPause() {
@@ -1405,4 +931,718 @@ super.onDestroy()
 stopGpsUpdates()
 executor.shutdownNow()
 }
+
+// ================= Compose UI =================
+
+@Composable
+private fun AegisApp() {
+MaterialTheme(colorScheme = AegisColorScheme) {
+Surface(color = BgColor, modifier = Modifier.fillMaxSize()) {
+Column(modifier = Modifier.fillMaxSize()) {
+Text(
+"🛡️ AEGIS — 地震・津波・気象",
+color = Color.White,
+fontSize = 19.sp,
+fontWeight = FontWeight.Bold,
+modifier = Modifier.padding(14.dp)
+)
+TabBar()
+Text(
+statusText,
+color = MutedTextColor,
+fontSize = 12.sp,
+modifier = Modifier
+.fillMaxWidth()
+.padding(horizontal = 14.dp, vertical = 6.dp)
+)
+LazyColumn(
+modifier = Modifier
+.weight(1f)
+.fillMaxWidth()
+.padding(horizontal = 12.dp)
+) {
+if (currentTab == "settings") {
+item { SettingsPanel()}
+}
+if (demoMode && ("briefing" == currentTab || "quakes" == currentTab)) {
+item {
+Button(
+onClick = { disableDemo()},
+modifier = Modifier
+.fillMaxWidth()
+.padding(bottom = 10.dp)
+) { Text("テスト表示を終了")}
+}
+}
+when (val c = content) {
+is UiContent.Loading -> item {
+Text(c.message, color = MutedTextColor, fontSize = 14.sp)
+}
+is UiContent.Cards -> {
+items(c.sections) { s -> SectionCard(s)}
+items(c.quakes) { q -> QuakeCard(q, big = false)}
+}
+is UiContent.BriefingC -> {
+val sections = c.briefing.sections
+val weathers = c.briefing.weathers
+if (sections.isNotEmpty()) {
+item { SummaryCard(sections[0])}
+}
+items(weathers) { w -> WeatherCard(w)}
+items(sections.drop(1 + weathers.size)) { s -> SectionCard(s)}
+}
+is UiContent.QuakesC -> {
+val eew = c.eew
+if (eew!= null &&!eew.isCancel) {
+item { EewCountdownCard(eew, c.demo)}
+} else if (eew!= null) {
+item {
+SectionCard(AegisData.Section("🚨 緊急地震速報",
+AegisData.eewStaticBody(eew), "info"))
+}
+}
+items(c.sections) { s -> SectionCard(s)}
+itemsIndexed(c.quakes) { i, q -> QuakeCard(q, big = i == 0)}
+}
+is UiContent.RadarC -> {
+item { RadarContent(c)}
+}
+is UiContent.NewsC -> {
+item {
+Text(
+"📰 防災・主要ニュース（NHK）— タップで記事を開きます",
+color = MutedTextColor,
+fontSize = 12.sp,
+modifier = Modifier.padding(bottom = 8.dp)
+)
+}
+items(c.items) { n -> NewsCard(n)}
+}
+}
+}
+}
+}
+}
+// GPS 地域選択ダイアログ
+val choice = gpsChoice
+if (choice!= null) {
+AlertDialog(
+onDismissRequest = { gpsChoice = null},
+title = { Text(choice.pref.name + " の地域区分を選択")},
+text = {
+LazyColumn {
+items(choice.names) { name ->
+Text(
+name,
+color = BodyTextColor,
+fontSize = 15.sp,
+modifier = Modifier
+.fillMaxWidth()
+.clickable {
+gpsChoice = null
+registerGpsLocation(choice.pref, choice.lat, choice.lon, name)
+}
+.padding(vertical = 10.dp)
+)
+}
+}
+},
+confirmButton = {},
+dismissButton = {
+TextButton(onClick = { gpsChoice = null}) { Text("キャンセル")}
+}
+)
+}
+}
+
+@Composable
+private fun TabBar() {
+val tabs = listOf(
+"briefing" to "ブリーフィング",
+"quakes" to "地震",
+"radar" to "レーダー",
+"news" to "ニュース",
+"settings" to "設定"
+)
+Row(modifier = Modifier.padding(horizontal = 8.dp)) {
+for ((id, label) in tabs) {
+Button(
+onClick = { showTab(id)},
+colors = ButtonDefaults.buttonColors(
+containerColor = CardColor,
+contentColor = if (currentTab == id) AmberColor else Color.White
+),
+modifier = Modifier
+.weight(1f)
+.padding(horizontal = 2.dp)
+) {
+Text(label, fontSize = 11.sp)
+}
+}
+Button(
+onClick = { loadCurrent()},
+colors = ButtonDefaults.buttonColors(
+containerColor = CardColor,
+contentColor = Color.White
+),
+modifier = Modifier.padding(horizontal = 2.dp)
+) {
+Text("↻", fontSize = 13.sp)
+}
+}
+}
+
+private fun levelColor(level: String?): Color {
+return when (level?: "") {
+"danger" -> Color(0xFFFF6B6B)
+"warn" -> AmberColor
+"ok" -> Color(0xFF58C184)
+else -> Color(0xFF7FA8E0)
+}
+}
+
+private fun scaleColor(scale: Int): Color {
+if (scale >= 45) return Color(0xFFC93A3A) // 5弱以上: 赤
+if (scale >= 40) return Color(0xFFD97A2B) // 4: オレンジ
+if (scale >= 30) return Color(0xFFA8871D) // 3: 黄土
+if (scale >= 20) return Color(0xFF3E6B9E) // 2: 青
+return Color(0xFF54687F) // 1: グレー青
+}
+
+// カードの外枠 (タイトル行つき)
+@Composable
+private fun CardShell(title: String, level: String, body: @Composable () -> Unit) {
+Column(
+modifier = Modifier
+.fillMaxWidth()
+.padding(bottom = 10.dp)
+.clip(RoundedCornerShape(12.dp))
+.background(CardColor)
+.padding(horizontal = 14.dp, vertical = 12.dp)
+) {
+Row(verticalAlignment = Alignment.CenterVertically) {
+Text("●", color = levelColor(level), fontSize = 11.sp,
+modifier = Modifier.padding(end = 8.dp))
+Text(title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+}
+body()
+}
+}
+
+@Composable
+private fun SectionCard(s: AegisData.Section) {
+CardShell(s.title, s.level) {
+Text(
+s.body,
+color = BodyTextColor,
+fontSize = 14.sp,
+lineHeight = (14 * 1.3).sp,
+modifier = Modifier.padding(top = 6.dp)
+)
+}
+}
+
+// ----- 表形式の描画ヘルパー -----
+// ラベル列を揃えた [ラベル | 値] 行。値が空の行は注記として小さく全文表示する
+@Composable
+private fun LabelValueRow(label: String, value: String?, labelWidthDp: Int, alt: Boolean) {
+if (value.isNullOrEmpty()) {
+Text(
+label,
+color = SecondaryTextColor,
+fontSize = 12.sp,
+modifier = Modifier
+.fillMaxWidth()
+.padding(horizontal = 2.dp, vertical = 3.dp)
+)
+return
+}
+Row(
+modifier = Modifier
+.fillMaxWidth()
+.then(if (alt) Modifier.background(LabelAltColor) else Modifier)
+.padding(horizontal = 2.dp, vertical = 4.dp)
+) {
+Text(
+label,
+color = SecondaryTextColor,
+fontSize = 13.sp,
+fontWeight = FontWeight.Bold,
+modifier = Modifier.width(labelWidthDp.dp)
+)
+Text(value, color = BodyTextColor, fontSize = 13.sp, modifier = Modifier.weight(1f))
+}
+}
+
+// 「ラベル：値」テキストをラベル列を揃えた行の集まりとして追加する
+@Composable
+private fun LabelRows(text: String?, labelWidthDp: Int) {
+if (text.isNullOrEmpty()) return
+val rows = AegisData.summaryRows(text)
+for (i in rows.indices) {
+LabelValueRow(rows[i][0], rows[i][1], labelWidthDp, i % 2 == 1)
+}
+}
+
+// 表の1行 (widths: dp指定、0 は残り幅いっぱいの可変列)。ヘッダー行と交互背景に対応
+@Composable
+private fun TableRowCells(cells: Array<String>, widths: IntArray, header: Boolean, rowIndex: Int) {
+Row(
+verticalAlignment = Alignment.CenterVertically,
+modifier = Modifier
+.fillMaxWidth()
+.background(
+if (header) TableHeaderColor
+else if (rowIndex % 2 == 0) CardColor else CardAltColor
+)
+.padding(horizontal = 8.dp, vertical = 5.dp)
+) {
+for (i in cells.indices) {
+val m = if (widths[i] > 0) Modifier.width(widths[i].dp) else Modifier.weight(1f)
+Text(
+cells[i],
+color = if (header) Color.White else BodyTextColor,
+fontSize = 13.sp,
+fontWeight = if (header) FontWeight.Bold else FontWeight.Normal,
+modifier = m
+)
+}
+}
+}
+
+// 表内の日付見出し行
+@Composable
+private fun DateHeaderRow(date: String, weekday: String) {
+Text(
+"📅 " + date + (if (weekday.isEmpty()) "" else "（" + weekday + "）"),
+color = AmberColor,
+fontSize = 12.sp,
+fontWeight = FontWeight.Bold,
+modifier = Modifier.padding(start = 2.dp, top = 8.dp, end = 2.dp, bottom = 3.dp)
+)
+}
+
+// 表の小見出し
+@Composable
+private fun TableSubheading(text: String) {
+Text(
+text,
+color = SecondaryTextColor,
+fontSize = 12.sp,
+fontWeight = FontWeight.Bold,
+modifier = Modifier.padding(start = 2.dp, top = 10.dp, end = 2.dp, bottom = 4.dp)
+)
+}
+
+// 「📌 現在のまとめ」カード (ラベル列を揃えた行レイアウト)
+@Composable
+private fun SummaryCard(s: AegisData.Section) {
+CardShell(s.title, s.level) {
+val rows = AegisData.summaryRows(s.body)
+for (i in rows.indices) {
+LabelValueRow(rows[i][0], rows[i][1], 108, i % 2 == 1)
+}
+}
+}
+
+// 天気カード (ラベル行 + 時間別/週間/降水確率の表)
+@Composable
+private fun WeatherCard(w: AegisData.WeatherView) {
+CardShell("☀ 天気予報（" + w.loc.name + "）", w.level) {
+LabelRows(w.daysText, 84)
+LabelRows(w.tempsText, 84)
+if (w.popRows.isNotEmpty()) {
+TableSubheading("降水確率（気象庁・6時間ごと）")
+TableRowCells(arrayOf("時間帯", "降水確率"), POP_COLS, true, 0)
+var prevDate = ""
+var idx = 0
+for (r in w.popRows) {
+if (r.date!= prevDate) {
+DateHeaderRow(r.date, r.weekday)
+prevDate = r.date
+}
+TableRowCells(
+arrayOf(r.fromHour.toString() + "〜" + r.toHour + "時",
+if (r.pop < 0) "-%" else r.pop.toString() + "%"),
+POP_COLS, false, idx++
+)
+}
+}
+LabelRows(w.currentText, 84)
+LabelRows(w.tomorrowText, 84)
+if (w.hourRows.isNotEmpty()) {
+TableSubheading("時間別予報（3時間ごと）")
+TableRowCells(arrayOf("時刻", "天気", "気温", "降水"), HOUR_COLS, true, 0)
+var prevDate = ""
+var idx = 0
+for (r in w.hourRows) {
+if (r.date!= prevDate) {
+DateHeaderRow(r.date, r.weekday)
+prevDate = r.date
+}
+TableRowCells(
+arrayOf(r.hour.toString() + "時", r.emoji + " " + r.desc,
+r.temp.toString() + "℃", if (r.pop < 0) "-%" else r.pop.toString() + "%"),
+HOUR_COLS, false, idx++
+)
+}
+}
+if (w.dayRows.isNotEmpty()) {
+TableSubheading("週間予報")
+TableRowCells(arrayOf("日付", "天気", "気温", "降水"), DAY_COLS, true, 0)
+var idx = 0
+for (r in w.dayRows) {
+TableRowCells(
+arrayOf(r.date + (if (r.weekday.isEmpty()) "" else "（" + r.weekday + "）"),
+r.emoji + " " + r.desc, r.minTemp.toString() + "〜" + r.maxTemp + "℃",
+if (r.pop < 0) "-%" else r.pop.toString() + "%"),
+DAY_COLS, false, idx++
+)
+}
+}
+if (w.warningText.isNotEmpty()) {
+Text(
+w.warningText,
+color = AmberColor,
+fontSize = 13.sp,
+lineHeight = (13 * 1.3).sp,
+modifier = Modifier.padding(top = 8.dp)
+)
+}
+}
+}
+
+// EEW カウントダウンカード (本文は状態 eewBodyText を1秒ごとに差し替える)
+@Composable
+private fun EewCountdownCard(eew: AegisData.EewInfo, demo: Boolean) {
+CardShell(if (demo) "🚨 緊急地震速報" else "🚨 緊急地震速報", "danger") {
+Text(
+eewBodyText,
+color = BodyTextColor,
+fontSize = 15.sp,
+lineHeight = (15 * 1.3).sp,
+modifier = Modifier.padding(top = 6.dp)
+)
+}
+}
+
+@Composable
+private fun QuakeCard(q: AegisData.Quake, big: Boolean) {
+Row(
+verticalAlignment = Alignment.CenterVertically,
+modifier = Modifier
+.fillMaxWidth()
+.padding(bottom = 10.dp)
+.clip(RoundedCornerShape(12.dp))
+.background(CardColor)
+.padding(horizontal = 12.dp, vertical = if (big) 16.dp else 10.dp)
+) {
+Box(
+contentAlignment = Alignment.Center,
+modifier = Modifier
+.clip(RoundedCornerShape(8.dp))
+.background(scaleColor(q.maxScale))
+.padding(horizontal = 10.dp, vertical = 6.dp)
+) {
+Text(
+"震度" + AegisData.scaleToStr(q.maxScale),
+color = Color.White,
+fontSize = if (big) 17.sp else 13.sp,
+fontWeight = FontWeight.Bold
+)
+}
+Column(modifier = Modifier
+.weight(1f)
+.padding(start = 12.dp)) {
+Text(q.place, color = Color.White, fontSize = if (big) 19.sp else 15.sp,
+fontWeight = FontWeight.Bold)
+Text(q.detail, color = SecondaryTextColor, fontSize = if (big) 14.sp else 12.sp,
+modifier = Modifier.padding(top = 2.dp))
+if (big) {
+val elapsed = elapsedText(q.originMillis)
+if (elapsed.isNotEmpty()) {
+Text("⏱ " + elapsed, color = AmberColor, fontSize = 13.sp,
+modifier = Modifier.padding(top = 3.dp))
+}
+}
+}
+if (q.lat!= 0.0 || q.lon!= 0.0) {
+Button(onClick = { openQuakeMap(q)}) {
+Text("🗺 地図", fontSize = 12.sp)
+}
+}
+}
+}
+
+// ----- レーダータブ -----
+@Composable
+private fun RadarContent(c: UiContent.RadarC) {
+val locs = AegisData.effectiveLocations()
+Column(
+modifier = Modifier
+.fillMaxWidth()
+.padding(bottom = 10.dp)
+.clip(RoundedCornerShape(12.dp))
+.background(CardColor)
+.padding(horizontal = 14.dp, vertical = 12.dp)
+) {
+Text("🌧 気象レーダー", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+Row(
+modifier = Modifier
+.padding(top = 8.dp)
+.horizontalScroll(rememberScrollState())
+) {
+for (i in locs.indices) {
+Button(
+onClick = {
+radarLocIndex = i
+loadRadar()
+},
+colors = ButtonDefaults.buttonColors(
+containerColor = CardAltColor,
+contentColor = if (i == radarLocIndex) AmberColor else Color.White
+),
+modifier = Modifier.padding(end = 6.dp)
+) {
+Text(locs[i].name, fontSize = 12.sp)
+}
+}
+}
+}
+val bmp = c.bitmap
+if (bmp!= null) {
+Image(
+bitmap = bmp.asImageBitmap(),
+contentDescription = "気象レーダー画像",
+contentScale = ContentScale.FillWidth,
+modifier = Modifier
+.fillMaxWidth()
+.padding(bottom = 8.dp)
+)
+}
+Text(c.caption, color = SecondaryTextColor, fontSize = 12.sp)
+}
+
+// ----- ニュースタブ -----
+@Composable
+private fun NewsCard(n: AegisData.NewsItem) {
+Column(
+modifier = Modifier
+.fillMaxWidth()
+.padding(bottom = 10.dp)
+.clip(RoundedCornerShape(12.dp))
+.background(CardColor)
+.clickable {
+try {
+startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(n.link)))
+} catch (e: Exception) {
+statusText = "記事を開けませんでした"
+}
+}
+.padding(horizontal = 14.dp, vertical = 12.dp)
+) {
+Text(
+(if (n.timeText.isEmpty()) "" else n.timeText + "　") + n.title,
+color = Color.White,
+fontSize = 15.sp,
+fontWeight = FontWeight.Bold
+)
+if (n.summary.isNotEmpty()) {
+Text(
+n.summary,
+color = BodyTextColor,
+fontSize = 13.sp,
+lineHeight = (13 * 1.3).sp,
+modifier = Modifier.padding(top = 5.dp)
+)
+}
+}
+}
+
+    // ----- 設定パネル -----
+    @Composable
+    private fun RadioOption(label: String, selected: Boolean, onClick: () -> Unit) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.clickable { onClick() }
+        ) {
+            RadioButton(
+                selected = selected,
+                onClick = onClick,
+                colors = RadioButtonDefaults.colors(selectedColor = AmberColor)
+            )
+            Text(label, color = Color.White, fontSize = 14.sp)
+        }
+    }
+
+    @Composable
+    private fun SettingsTextField(
+        value: String,
+        onValueChange: (String) -> Unit,
+        hint: String,
+        keyboardType: KeyboardType = KeyboardType.Text,
+        modifier: Modifier = Modifier
+    ) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = { Text(hint, color = MutedTextColor) },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White,
+                focusedBorderColor = AmberColor,
+                unfocusedBorderColor = SecondaryTextColor,
+                cursorColor = AmberColor,
+                focusedContainerColor = CardColor,
+                unfocusedContainerColor = CardColor
+            ),
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+        )
+    }
+
+    @Composable
+    private fun SettingsPanel() {
+        Column(modifier = Modifier.padding(bottom = 12.dp)) {
+            // 取得モード
+            RadioOption("直接取得（推奨）", modeSel == "direct") { modeSel = "direct" }
+            RadioOption("AEGISサーバーから取得", modeSel == "server") { modeSel = "server" }
+            SettingsTextField(serverUrlText, { serverUrlText = it }, "http://192.168.1.10:8765", KeyboardType.Uri)
+            Button(onClick = { testServer() }, modifier = Modifier.fillMaxWidth()) {
+                Text("接続テスト（サーバーURL）")
+            }
+            Button(onClick = { saveModeSettings() }, modifier = Modifier.fillMaxWidth()) {
+                Text("設定を保存")
+            }
+            Button(onClick = { runDiagnose() }, modifier = Modifier.fillMaxWidth()) {
+                Text("🩺 接続テスト（自己診断）")
+            }
+            Button(
+                onClick = { if (demoMode) disableDemo() else enableDemo() },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("🧪 テスト表示（デモ）")
+            }
+            Text(
+                "接続テストは各データソースへの到達を確認します。テスト表示はサンプルの警報・緊急地震速報（カウントダウン付き）を表示するデモで、実際のデータに切り替わると自動で終了します。",
+                color = MutedTextColor, fontSize = 11.sp
+            )
+
+            // バックグラウンド同期と通知
+            Text(
+                "🔔 バックグラウンド同期と通知",
+                color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 16.dp)
+            )
+            Text(bgSyncStatusText, color = BodyTextColor, fontSize = 12.sp,
+                modifier = Modifier.padding(top = 4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("バックグラウンド同期（アプリを閉じていても新着を通知）",
+                    color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                Switch(checked = bgSyncOn, onCheckedChange = { onBgSyncChanged(it) })
+            }
+            Text("同期間隔", color = MutedTextColor, fontSize = 11.sp,
+                modifier = Modifier.padding(top = 6.dp))
+            Row {
+                RadioOption("15分", intervalMin == 15) { onIntervalChanged(15) }
+                RadioOption("30分", intervalMin == 30) { onIntervalChanged(30) }
+                RadioOption("60分", intervalMin == 60) { onIntervalChanged(60) }
+            }
+            Text(notifyPermStatusText, color = BodyTextColor, fontSize = 12.sp,
+                modifier = Modifier.padding(top = 6.dp))
+            Button(onClick = { onNotifyPermClicked() }, modifier = Modifier.fillMaxWidth()) {
+                Text("通知の許可をリクエスト")
+            }
+            Text("地震の通知しきい値", color = MutedTextColor, fontSize = 11.sp,
+                modifier = Modifier.padding(top = 6.dp))
+            Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                RadioOption("震度1", quakeThr == 10) { onQuakeThresholdChanged(10) }
+                RadioOption("震度2", quakeThr == 20) { onQuakeThresholdChanged(20) }
+                RadioOption("震度3", quakeThr == 30) { onQuakeThresholdChanged(30) }
+                RadioOption("震度4", quakeThr == 40) { onQuakeThresholdChanged(40) }
+                RadioOption("震度5弱", quakeThr == 45) { onQuakeThresholdChanged(45) }
+            }
+            Text("警報の通知範囲", color = MutedTextColor, fontSize = 11.sp,
+                modifier = Modifier.padding(top = 6.dp))
+            RadioOption("特別警報・警報のみ", warnModeSel == AegisData.WARN_MODE_ALERTS_ONLY) {
+                onWarnModeChanged(AegisData.WARN_MODE_ALERTS_ONLY)
+            }
+            RadioOption("注意報も含む", warnModeSel == AegisData.WARN_MODE_INCLUDE_ADVISORY) {
+                onWarnModeChanged(AegisData.WARN_MODE_INCLUDE_ADVISORY)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("朝夕ブリーフィング通知（7:00 / 21:00、任意）",
+                    color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                Switch(checked = briefingNotifyOn, onCheckedChange = { onBriefingNotifyChanged(it) })
+            }
+            Button(onClick = { onNotifyTestClicked() }, modifier = Modifier.fillMaxWidth()) {
+                Text("🔔 通知テスト")
+            }
+            Text(
+                "緊急地震速報と津波は常に通知します。地震は上のしきい値以上、警報は発表・変更時に通知します。通知済みの情報は再通知しません。発生から1時間以上たった情報は通知しません。",
+                color = MutedTextColor, fontSize = 11.sp
+            )
+
+            // 監視地点の追加
+            Text(
+                "📍 監視地点の追加（任意地点）",
+                color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 14.dp)
+            )
+            Text(
+                "都道府県コード例: 群馬県 100000 / 埼玉県 110000 / 東京都 130000（気象庁の都道府県コード）。地域名は気象庁の一次細分区域名（例: 南部）。緯度経度は地図アプリ等で調べられます。",
+                color = MutedTextColor, fontSize = 11.sp
+            )
+            SettingsTextField(locNameText, { locNameText = it }, "地点名（例: 実家）")
+            Row {
+                SettingsTextField(locLatText, { locLatText = it }, "緯度（例: 36.32）",
+                    KeyboardType.Decimal, Modifier.weight(1f))
+                SettingsTextField(locLonText, { locLonText = it }, "経度（例: 139.00）",
+                    KeyboardType.Decimal, Modifier.weight(1f))
+            }
+            Row {
+                SettingsTextField(locPrefText, { locPrefText = it }, "都道府県コード",
+                    KeyboardType.Number, Modifier.weight(1f))
+                SettingsTextField(locAreaText, { locAreaText = it }, "地域名（例: 南部）",
+                    KeyboardType.Text, Modifier.weight(1f))
+            }
+            Button(onClick = { addCustomLocation() }, modifier = Modifier.fillMaxWidth()) {
+                Text("地点を追加")
+            }
+            Button(onClick = { onGpsClicked() }, modifier = Modifier.fillMaxWidth()) {
+                Text("📍 現在地（GPS）を取得して地点登録")
+            }
+            Text(
+                "GPSで取得した位置から都道府県を推定し、地域区分を選んで「現在地」として登録します。",
+                color = MutedTextColor, fontSize = 11.sp
+            )
+            if (customLocs.isEmpty()) {
+                Text(
+                    "追加された地点はありません（高崎・大宮は標準で監視しています）",
+                    color = MutedTextColor, fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            } else {
+                for (i in customLocs.indices) {
+                    val l = customLocs[i]
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp)
+                    ) {
+                        Text(
+                            "📍 " + l.name + "（" + l.lat + ", " + l.lon + "）",
+                            color = Color.White, fontSize = 13.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Button(onClick = { deleteCustomLocation(i) }) { Text("削除") }
+                    }
+                }
+            }
+        }
+    }
 }

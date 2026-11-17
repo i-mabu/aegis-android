@@ -53,7 +53,7 @@ RELEASE_KEY_ALIAS=... \
 ./build-apk.sh release
 # -> dist/aegis-client-release.apk
 ```
-手順は 単体テスト（tests/run-tests.sh、111件）→ aapt2 compile/link → kotlinc（aapt2 生成の R.java のみ javac）→ d8（kotlin-stdlib.jar を同梱）→ zipalign → apksigner です。Kotlin コンパイラは `KOTLINC` 環境変数 → `~/workspace/tools/kotlin` → PATH の順に探します。SDK の場所は `ANDROID_SDK_ROOT` / `ANDROID_HOME` で上書きできます。
+手順は 単体テスト（tests/run-tests.sh、111件）→ aapt2 compile（アプリとライブラリ AAR の res すべて）/ link（`--auto-add-overlay` と、R.txt を持つ AAR への `--extra-packages`）→ kotlinc + Compose コンパイラプラグイン（Maven 版 `kotlin-compose-compiler-plugin`、aapt2 生成の R.java は javac）→ 単体 R8 による D8（マルチデックス、kotlin-stdlib.jar を同梱）→ zipalign → apksigner です。依存ライブラリ（Compose 1.7.6 / material3 1.3.1 など）は `libs/` に置き、`tools/resolve.py` で再解決できます。Kotlin コンパイラは `KOTLINC` 環境変数 → `~/workspace/tools/kotlin` → PATH の順に探します。SDK の場所は `ANDROID_SDK_ROOT` / `ANDROID_HOME` で上書きできます。
 ビルドは bash スクリプトです（build.bat はありません）。Windows では WSL 上で実行してください。
 
 ### 方法B: Gradle / Android Studio
@@ -193,3 +193,11 @@ aegis-android/
 - あわせて全ソースを旧 Java 版と1件ずつ突き合わせる精密レビューを実施: 文字列リテラル・数値定数・比較条件・null 扱い・日時/タイムゾーン・sentinel 値はいずれも移植前と一致していることを確認した（上記以外の挙動変更なし）
 - **User-Agent の版数表記を更新**: HTTP 取得（fetch / fetchBytes）が送る User-Agent が `AEGIS-Android/1.6` のまま旧版数を名乗っていたため、現行の `AEGIS-Android/1.7` に合わせた
 - 単体テストは従来どおり111件全パス（デモタイトルは Activity 内の表示文字列のため TestMain の対象外で、旧 Java 版とのリテラル全件照合で回帰を確認）
+
+## v1.8.0 の変更点（2026-11-18、Jetpack Compose 化 + アイコン刷新）
+
+- **UI を Jetpack Compose（Material3）へ全面移行**: MainActivity を ComponentActivity + setContent に書き換え、全画面（ブリーフィングの表形式天気・地震モニターの EEW カウントダウン・レーダー・ニュース・設定）を Compose で再実装した。データ取得・整形（AegisData）、バックグラウンド同期・通知（AegisSync / AlarmManager）、キャッシュ、自動更新間隔（5分／地震タブ30秒／EEW 1秒）などの挙動は従来どおり。レーダーの Bitmap は Compose の Image で表示し、地図アプリ連携・ブラウザ連携も維持している
+- **アプリアイコンを新デザインに刷新**: 生成アートワーク（盾＋ピン＋波形）から adaptive icon（前景=アートワークをセーフゾーン内に配置、背景=アートワークに合わせた濃紺 #152657）と、従来解像度の mipmap PNG（丸型含む）を生成した
+- **ビルドパイプラインを Compose 対応に拡張**（方法A の手動ビルドを維持）: ライブラリ AAR のリソースを aapt2 で一括リンク（`--auto-add-overlay` / `--extra-packages`）、Compose コンパイラプラグインは Maven 版を使用（kotlinc 同梱版は plain kotlinc では動作しないため）、デキサは build-tools 同梱 d8 から単体 R8 8.7.18 に切替（lifecycle のクラスで同梱 d8 がクラッシュするため）、マルチデックス同梱、AAR 内 .so の手動パッケージング。ライブラリのマニフェストはマージしないため androidx.startup 等のライブラリ側初期化は無効のまま（Compose UI の動作には影響しない）
+- 単体テストは従来どおり111件全パス。versionCode 13 / versionName 1.8.0
+- ⚠️ 実機での描画確認は未実施です（この環境には実機/エミュレータがありません）。インストールして各タブの表示を確認してください
