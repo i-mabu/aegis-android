@@ -12,6 +12,13 @@ public class TestMain {
         System.out.println("ok: " + name);
     }
 
+    private static boolean rainHas(java.util.List<int[]> tiles, int tx, int ty, int dx, int dy) {
+        for (int[] t : tiles) {
+            if (t[0] == tx && t[1] == ty && t[2] == dx && t[3] == dy) return true;
+        }
+        return false;
+    }
+
     public static void main(String[] args) {
         // 接続テスト (自己診断) の結果整形
         check(AegisData.diagLine("P2P", true, 123, "").equals("○ P2P：接続OK（123ms）"), "diagLine ok");
@@ -26,6 +33,20 @@ public class TestMain {
         check(AegisData.tileX(139.0023, 8) == 226, "tileX takasaki z8");
         check(AegisData.tileY(36.3219, 8) == 100, "tileY takasaki z8");
         check(AegisData.tileX(-180, 8) == 0 && AegisData.tileX(180, 8) == 255, "tileX clamp");
+
+        // レーダーの雨タイル (z7) カバー範囲: [tx, ty, 描画X, 描画Y]、描画サイズは 512×512
+        // 中心タイルが偶数 (高崎 cx=226, cy=100 → 原点 ox=225, oy=99): 2×2枚、オフセット -256/256
+        java.util.List<int[]> rainEven = AegisData.rainTilesFor(225, 99);
+        check(rainEven.size() == 4, "rainTiles even count");
+        check(rainHas(rainEven, 112, 49, -256, -256) && rainHas(rainEven, 113, 49, 256, -256)
+                && rainHas(rainEven, 112, 50, -256, 256) && rainHas(rainEven, 113, 50, 256, 256),
+                "rainTiles even set/offsets");
+        // 中心タイルが奇数 (ox=226, oy=100): 2×2枚、オフセット 0/512 (キャンバス外へのはみ出しは正常)
+        java.util.List<int[]> rainOdd = AegisData.rainTilesFor(226, 100);
+        check(rainOdd.size() == 4, "rainTiles odd count");
+        check(rainHas(rainOdd, 113, 50, 0, 0) && rainHas(rainOdd, 114, 50, 512, 0)
+                && rainHas(rainOdd, 113, 51, 0, 512) && rainHas(rainOdd, 114, 51, 512, 512),
+                "rainTiles odd set/offsets");
 
         // 都道府県テーブル
         check("群馬県".equals(AegisData.prefNameForCode("100000")), "prefNameForCode gunma");

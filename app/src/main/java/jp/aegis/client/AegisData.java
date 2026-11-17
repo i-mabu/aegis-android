@@ -1176,7 +1176,25 @@ public final class AegisData {
         }
     }
 
-    // 選択地点を中心に ズーム8・3×3タイル (地理院地図 + RainViewer レーダー) を合成する
+    // 雨タイル (RainViewer はズーム7までしか無い) が、ベース地図 (ズーム8・原点 ox,oy の
+    // 3×3タイル = 768×768) をカバーする範囲を返す純粋関数。
+    // 各要素は [tx, ty, 描画X, 描画Y] で、z7タイルは 512×512 に拡大して描画する。
+    // 描画位置が負になったりキャンバス外にはみ出すのは正常 (描画側でクリッピングされる)。
+    public static java.util.List<int[]> rainTilesFor(int ox, int oy) {
+        java.util.List<int[]> out = new java.util.ArrayList<>();
+        int tx0 = Math.floorDiv(ox, 2), tx1 = Math.floorDiv(ox + 2, 2);
+        int ty0 = Math.floorDiv(oy, 2), ty1 = Math.floorDiv(oy + 2, 2);
+        for (int tx = tx0; tx <= tx1; tx++) {
+            for (int ty = ty0; ty <= ty1; ty++) {
+                out.add(new int[]{tx, ty, (2 * tx - ox) * 256, (2 * ty - oy) * 256});
+            }
+        }
+        return out;
+    }
+
+    // 選択地点を中心に ズーム8・3×3タイル (地理院地図) に RainViewer レーダーを合成する。
+    // RainViewer のタイルはズーム7までで、z8 では "Zoom Level Not Supported" のバナー画像が
+    // 返ってくるため、雨タイルは z7 で取得して 512×512 に拡大描画する。
     public static RadarImage radarImage(Location loc) throws Exception {
         JSONObject root = new JSONObject(fetch("https://api.rainviewer.com/public/weather-maps.json"));
         JSONArray past = root.getJSONObject("radar").getJSONArray("past");
@@ -1186,7 +1204,8 @@ public final class AegisData {
         long epochSec = last.getLong("time");
         final int z = 8, tile = 256;
         final int cx = tileX(loc.lon, z), cy = tileY(loc.lat, z);
-        // 18枚のタイルを並列取得する
+        final int ox = cx - 1, oy = cy - 1;
+        // ベースタイル (z8・9枚) と雨タイル (z7・最大4枚) を並列取得する
         java.util.Map<String, java.util.concurrent.Future<android.graphics.Bitmap>> futures = new java.util.HashMap<>();
         for (int dx = -1; dx <= 1; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
@@ -1194,14 +1213,20 @@ public final class AegisData {
                 if (x < 0 || y < 0 || x >= (1 << z) || y >= (1 << z)) continue;
                 futures.put("b" + dx + "," + dy, FETCH_POOL.submit(() -> fetchTile(
                         "https://cyberjapandata.gsi.go.jp/xyz/std/" + z + "/" + x + "/" + y + ".png")));
-                futures.put("r" + dx + "," + dy, FETCH_POOL.submit(() -> fetchTile(
-                        "https://tilecache.rainviewer.com" + path + "/256/" + z + "/" + x + "/" + y + "/2/1_1.png")));
             }
+        }
+        java.util.List<int[]> rainTiles = rainTilesFor(ox, oy);
+        for (int i = 0; i < rainTiles.size(); i++) {
+            final int tx = rainTiles.get(i)[0], ty = rainTiles.get(i)[1];
+            if (tx < 0 || ty < 0 || tx >= (1 << 7) || ty >= (1 << 7)) continue;
+            final int idx = i;
+            futures.put("r" + idx, FETCH_POOL.submit(() -> fetchTile(
+                    "https://tilecache.rainviewer.com" + path + "/256/7/" + tx + "/" + ty + "/2/1_1.png")));
         }
         android.graphics.Bitmap canvas = android.graphics.Bitmap.createBitmap(tile * 3, tile * 3, android.graphics.Bitmap.Config.ARGB_8888);
         android.graphics.Canvas cv = new android.graphics.Canvas(canvas);
         cv.drawColor(android.graphics.Color.parseColor("#0B1220"));
-        int radarOk = 0;
+        // ベースタイルを全て描いてから、雨タイル (512×512 に拡大) を重ねる
         for (int dx = -1; dx <= 1; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
                 int px = (dx + 1) * tile, py = (dy + 1) * tile;
@@ -1210,12 +1235,21 @@ public final class AegisData {
                     android.graphics.Bitmap b = fb == null ? null : fb.get(30, java.util.concurrent.TimeUnit.SECONDS);
                     if (b != null) cv.drawBitmap(b, px, py, null);
                 } catch (Exception ignored) {}
-                try {
-                    java.util.concurrent.Future<android.graphics.Bitmap> fr = futures.get("r" + dx + "," + dy);
-                    android.graphics.Bitmap r = fr == null ? null : fr.get(30, java.util.concurrent.TimeUnit.SECONDS);
-                    if (r != null) { cv.drawBitmap(r, px, py, null); radarOk++; }
-                } catch (Exception ignored) {}
             }
+        }
+        int radarOk = 0;
+        android.graphics.Paint rainPaint = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+        for (int i = 0; i < rainTiles.size(); i++) {
+            int[] rt = rainTiles.get(i);
+            if (rt[0] < 0 || rt[1] < 0 || rt[0] >= (1 << 7) || rt[1] >= (1 << 7)) continue;
+            try {
+                java.util.concurrent.Future<android.graphics.Bitmap> fr = futures.get("r" + i);
+                android.graphics.Bitmap r = fr == null ? null : fr.get(30, java.util.concurrent.TimeUnit.SECONDS);
+                if (r != null) {
+                    cv.drawBitmap(r, null, new android.graphics.Rect(rt[2], rt[3], rt[2] + 512, rt[3] + 512), rainPaint);
+                    radarOk++;
+                }
+            } catch (Exception ignored) {}
         }
         // 中心に地点マーカー (二重丸)
         android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
