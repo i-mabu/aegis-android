@@ -278,12 +278,12 @@ public final class AegisData {
                 if (time.length() < 19) continue;
                 java.util.Date t = new java.text.SimpleDateFormat("yyyy/MM/dd HH:mm:ss", java.util.Locale.JAPAN).parse(time.substring(0, 19));
                 if (t == null || System.currentTimeMillis() - t.getTime() > 60 * 60 * 1000L) return null; // 古い EEW は出さない
-                if (item.optBoolean("isCancel")) return "🚨 緊急地震速報は取り消されました（" + time.substring(5, 16) + "）";
-                StringBuilder sb = new StringBuilder("🚨 緊急地震速報");
+                if (item.optBoolean("isCancel")) return "緊急地震速報は取り消されました（" + time.substring(5, 16) + "）";
+                StringBuilder sb = new StringBuilder();
                 if (item.optBoolean("isFinal")) sb.append("（最終報）");
                 if (eq != null) {
                     JSONObject hypo = eq.optJSONObject("hypocenter");
-                    if (hypo != null) sb.append(": 震源 ").append(hypo.optString("name", "不明"));
+                    if (hypo != null) sb.append("震源 ").append(hypo.optString("name", "不明"));
                     int est = eq.optInt("maxScale", -1);
                     if (est > 0) sb.append(" / 推定最大震度 ").append(scaleToStr(est));
                 }
@@ -379,7 +379,7 @@ public final class AegisData {
                         String date = def.substring(5, 10).replace('-', '/'); // 11/17
                         if (shown > 0) pb.append(" / ");
                         if (!date.equals(prevDate)) { pb.append(date).append(" "); prevDate = date; }
-                        pb.append(hour).append("–").append((hour + 6) % 24).append("時 ").append(pops.optString(i)).append("%");
+                        pb.append(hour).append("〜").append((hour + 6) % 24).append("時 ").append(pops.optString(i)).append("%");
                         shown++;
                     }
                     sb.append(pb).append("\n");
@@ -421,7 +421,7 @@ public final class AegisData {
             JSONObject daily = root.getJSONObject("daily");
             String desc = WMO.getOrDefault(String.valueOf(cur.optInt("weather_code")), "不明");
             double pop = daily.getJSONArray("precipitation_probability_max").optDouble(0, -1);
-            sb.append("現在: ").append(desc).append(" ").append(cur.optDouble("temperature_2m")).append("℃ / 風 ")
+            sb.append("現在：").append(desc).append(" ").append(cur.optDouble("temperature_2m")).append("℃ / 風 ")
               .append(cur.optDouble("wind_speed_10m")).append("km/h / 今日 ")
               .append(daily.getJSONArray("temperature_2m_min").optDouble(0)).append("〜")
               .append(daily.getJSONArray("temperature_2m_max").optDouble(0)).append("℃ / 降水確率 最大")
@@ -585,10 +585,17 @@ public final class AegisData {
         java.util.LinkedHashSet<String> warnNames = new java.util.LinkedHashSet<>();
         for (Section s : weatherSections) {
             for (String line : s.body.split("\n")) {
-                if (line.startsWith("⚠ 発表中：")) warnNames.add(line.substring("⚠ 発表中：".length()).trim());
+                if (line.startsWith("⚠ 発表中：")) {
+                    for (String nm : line.substring("⚠ 発表中：".length()).split("、")) {
+                        nm = nm.trim();
+                        int cut = nm.indexOf('（');
+                        if (cut > 0) nm = nm.substring(0, cut);
+                        if (!nm.isEmpty() && !warnNames.contains(nm)) warnNames.add(nm);
+                    }
+                }
             }
         }
-        sb.append(warnNames.isEmpty() ? "⚠ 警報・注意報: 発表なし" : "⚠ 発表中: " + String.join("、", warnNames));
+        sb.append(warnNames.isEmpty() ? "⚠ 警報・注意報：発表なし" : "⚠ 発表中：" + String.join("、", warnNames));
         sb.append("\n🌊 津波: ").append(tsunamiAlert ? "警報・注意報あり" : "なし");
         if (!quakes.isEmpty()) {
             Quake q = quakes.get(0);
