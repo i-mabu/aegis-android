@@ -527,7 +527,7 @@ dot.setTextColor(levelColor("danger"))
 dot.setTextSize(11f)
 dot.setPadding(0, 0, dp(8), 0)
 val title = TextView(this)
-title.text = if (demo) "🚨 緊急地震速報" else "🚨 緊急地震速報"
+title.text = if (demo) "🚨 【テスト】緊急地震速報" else "🚨 緊急地震速報"
 title.setTextColor(Color.WHITE)
 title.setTextSize(16f)
 title.typeface = Typeface.DEFAULT_BOLD
@@ -1232,7 +1232,7 @@ endBtn.setOnClickListener { disableDemo()}
 if ("quakes" == tab) {
 val sections = ArrayList<AegisData.Section>()
 sections.add(demoBanner())
-sections.add(AegisData.Section("🌊 津波情報", "津波の心配はありません（サンプル）。", "ok"))
+sections.add(AegisData.Section("🌊 【テスト】津波情報", "津波の心配はありません（サンプル）。", "ok"))
 val quakes = ArrayList<AegisData.Quake>()
 val now = System.currentTimeMillis()
 quakes.add(AegisData.Quake("テスト震源（サンプル）",
@@ -1246,13 +1246,13 @@ container.addView(endBtn, 0)
 } else {
 val sections = ArrayList<AegisData.Section>()
 sections.add(demoBanner())
-sections.add(AegisData.Section("📌 現在のまとめ",
+sections.add(AegisData.Section("📌 【テスト】現在のまとめ",
 "⚠ 発表中：大雨警報\n🌊 津波: なし\n🌏 最新の地震: 震度5弱 テスト震源（サンプル）\n☀ 高崎: 雨", "warn"))
-sections.add(AegisData.Section("☀ 天気予報（高崎）",
+sections.add(AegisData.Section("☀ 【テスト】天気予報（高崎）",
 "今日： 雨\n⚠ 発表中： 大雨警報（11/17 12:00発表）\n　大雨による土砂災害に警戒してください（サンプル文）。", "warn"))
-sections.add(AegisData.Section("🚨 緊急地震速報",
+sections.add(AegisData.Section("🚨 【テスト】緊急地震速報",
 AegisData.eewStaticBody(demoEew!!), "danger"))
-sections.add(AegisData.Section("🌏 最新の地震（1件）",
+sections.add(AegisData.Section("🌏 【テスト】最新の地震（1件）",
 "🟠 震度5弱 テスト震源（サンプル）", "info"))
 render(sections, ArrayList())
 container.addView(endBtn, 0)
