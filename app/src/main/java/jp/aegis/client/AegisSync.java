@@ -215,42 +215,30 @@ am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, briefingIntent(ctx, morning
 }
 
 // ----- 同期本体 (SyncReceiver からバックグラウンドスレッドで呼ばれる) -----
+// 保存は段階的に行う: 最終同期時刻は開始直後、通知済み ID はイベントを処理するたびに
+// commit() で即時保存する。goAsync の時間制限でプロセスが終了しても記録が残るようにするため。
 public static void doSyncWork(Context ctx) {
 loadCustomLocations(ctx);
-List<AegisData.SyncEvent> events = AegisData.collectSyncEvents();
 long now = System.currentTimeMillis();
 SharedPreferences p = prefs(ctx);
+p.edit().putLong(KEY_LAST_SYNC, now).commit();
+List<AegisData.SyncEvent> events = AegisData.collectSyncEvents();
 List<String> idList = AegisData.splitIds(p.getString(KEY_NOTIFIED_IDS, ""));
+// 初回同期 (通知済み ID が空) は登録のみで通知しない (シーディングによるフラッド防止)
+boolean seeding = AegisData.isFirstSync(idList);
 LinkedHashSet<String> seen = new LinkedHashSet<>(idList);
 boolean allowed = notificationsAllowed(ctx);
 int threshold = quakeThresholdScale(ctx);
 int mode = warnMode(ctx);
-boolean changed = false;
 for (AegisData.SyncEvent ev: events) {
 if (seen.contains(ev.id)) continue;
 // 通知しなかったイベントも「確認済み」として記録し、再評価とフラッドを防ぐ
 seen.add(ev.id);
 idList.add(ev.id);
-changed = true;
-if (!allowed) continue;
-if (!AegisData.isFreshEvent(ev.eventMillis, now)) continue; // 1時間超は通知しない
-boolean notify;
-switch (ev.kind) {
-case "quake":
-notify = AegisData.shouldNotifyQuake(ev.maxScale, threshold);
-break;
-case "warning":
-notify = AegisData.warningNotifiable(ev.hasSpecial, ev.hasWarning, mode);
-break;
-default: // tsunami / eew は常時通知
-notify = true;
-break;
+idList = AegisData.pruneIds(idList, AegisData.MAX_NOTIFIED_IDS);
+p.edit().putString(KEY_NOTIFIED_IDS, AegisData.joinIds(idList)).commit();
+if (AegisData.shouldNotifyEvent(ev, seeding, allowed, threshold, mode, now)) notifyEvent(ctx, ev);
 }
-if (notify) notifyEvent(ctx, ev);
-}
-SharedPreferences.Editor ed = p.edit().putLong(KEY_LAST_SYNC, now);
-if (changed) ed.putString(KEY_NOTIFIED_IDS, AegisData.joinIds(AegisData.pruneIds(idList, AegisData.MAX_NOTIFIED_IDS)));
-ed.apply();
 }
 
 // ----- 朝夕ブリーフィング通知 -----

@@ -223,6 +223,36 @@ public class TestMain {
         check("11/18".equals(popRows.get(2).date) && "水".equals(popRows.get(2).weekday) && popRows.get(2).pop == 50,
                 "buildPopRows next day");
 
+        // ----- v1.6.1: 初回同期のシーディングと通知判定 -----
+        check(AegisData.isFirstSync(new java.util.ArrayList<String>()), "isFirstSync empty -> true");
+        check(AegisData.isFirstSync(null), "isFirstSync null -> true");
+        check(!AegisData.isFirstSync(java.util.Arrays.asList("quake:1")), "isFirstSync with ids -> false");
+
+        long t0 = 1_700_000_000_000L;
+        AegisData.SyncEvent freshQuake = new AegisData.SyncEvent("quake", "quake:1", "t", "b", false, t0, 45, false, false);
+        AegisData.SyncEvent smallQuake = new AegisData.SyncEvent("quake", "quake:2", "t", "b", false, t0, 20, false, false);
+        AegisData.SyncEvent freshEew = new AegisData.SyncEvent("eew", AegisData.eewEventId(t0), "t", "b", true, t0);
+        AegisData.SyncEvent staleEew = new AegisData.SyncEvent("eew", AegisData.eewEventId(t0 - 2 * 3600_000L), "t", "b", true, t0 - 2 * 3600_000L);
+        AegisData.SyncEvent advisoryOnly = new AegisData.SyncEvent("warning", "warn:1", "t", "b", false, t0, -1, false, false);
+        AegisData.SyncEvent warningEv = new AegisData.SyncEvent("warning", "warn:2", "t", "b", false, t0, -1, false, true);
+        // 初回 (シーディング中) は新鮮なイベントでも通知しない (登録のみ)
+        check(!AegisData.shouldNotifyEvent(freshQuake, true, true, 30, AegisData.WARN_MODE_ALERTS_ONLY, t0), "shouldNotifyEvent seeding suppresses quake");
+        check(!AegisData.shouldNotifyEvent(freshEew, true, true, 30, AegisData.WARN_MODE_ALERTS_ONLY, t0), "shouldNotifyEvent seeding suppresses eew");
+        // 2回目以降は条件どおり
+        check(AegisData.shouldNotifyEvent(freshQuake, false, true, 30, AegisData.WARN_MODE_ALERTS_ONLY, t0), "shouldNotifyEvent quake above threshold");
+        check(!AegisData.shouldNotifyEvent(smallQuake, false, true, 30, AegisData.WARN_MODE_ALERTS_ONLY, t0), "shouldNotifyEvent quake below threshold");
+        check(AegisData.shouldNotifyEvent(freshEew, false, true, 30, AegisData.WARN_MODE_ALERTS_ONLY, t0), "shouldNotifyEvent eew always");
+        check(!AegisData.shouldNotifyEvent(staleEew, false, true, 30, AegisData.WARN_MODE_ALERTS_ONLY, t0), "shouldNotifyEvent stale eew suppressed");
+        check(!AegisData.shouldNotifyEvent(freshQuake, false, false, 30, AegisData.WARN_MODE_ALERTS_ONLY, t0), "shouldNotifyEvent notifications not allowed");
+        check(!AegisData.shouldNotifyEvent(advisoryOnly, false, true, 30, AegisData.WARN_MODE_ALERTS_ONLY, t0), "shouldNotifyEvent advisory-only excluded");
+        check(AegisData.shouldNotifyEvent(advisoryOnly, false, true, 30, AegisData.WARN_MODE_INCLUDE_ADVISORY, t0), "shouldNotifyEvent advisory included by mode");
+        check(AegisData.shouldNotifyEvent(warningEv, false, true, 30, AegisData.WARN_MODE_ALERTS_ONLY, t0), "shouldNotifyEvent warning in alerts-only");
+        check(!AegisData.shouldNotifyEvent(null, false, true, 30, AegisData.WARN_MODE_ALERTS_ONLY, t0), "shouldNotifyEvent null event");
+
+        // EEW の重複排除 ID は発生時刻ベース (続報=reportMillis が変わっても同一 ID)
+        check("eew:1700000000000".equals(AegisData.eewEventId(1_700_000_000_000L)), "eewEventId origin-based format");
+        check(AegisData.eewEventId(t0).equals(AegisData.eewEventId(t0)), "eewEventId stable for same origin");
+
         // ラベル：値 の分解 (全角/半角コロン、区切りなし、長すぎるラベルは分解しない)
         java.util.List<String[]> srows = AegisData.summaryRows("⚠ 発表中：大雨警報\n🌊 津波: なし\n注記のみの行");
         check(srows.size() == 3, "summaryRows size");

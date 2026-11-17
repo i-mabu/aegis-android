@@ -32,6 +32,11 @@ jobs:
         run: |
           chmod +x build-apk.sh
           ANDROID_SDK_ROOT="$ANDROID_HOME" ./build-apk.sh
+      - name: Run unit tests (pure functions, no network)
+        run: |
+          mkdir -p /tmp/aegis-test
+          javac -cp build/manual/classes:"$ANDROID_HOME/platforms/android-34/android.jar" -d /tmp/aegis-test tests/TestMain.java
+          java -cp /tmp/aegis-test:build/manual/classes:"$ANDROID_HOME/platforms/android-34/android.jar" TestMain
       - name: Verify APK
         run: |
           "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging dist/aegis-client.apk | head -5

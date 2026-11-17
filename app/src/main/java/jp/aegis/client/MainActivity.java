@@ -281,7 +281,10 @@ public class MainActivity extends Activity {
             Button del = new Button(this);
             del.setText("削除");
             del.setOnClickListener(v -> {
-                AegisData.customLocations.remove(idx);
+                // 追加と同じく「コピー→差し替え」に統一する (共有リストのインプレース変更はしない)
+                List<AegisData.Location> next = new ArrayList<>(AegisData.customLocations);
+                if (idx < next.size()) next.remove(idx);
+                AegisData.customLocations = next;
                 saveCustomLocations();
                 renderCustomList();
                 status.setText("地点を削除しました");
@@ -1014,10 +1017,20 @@ public class MainActivity extends Activity {
     private GpsListener gpsListener;
     private final Runnable gpsTimeout = () -> {
         if (gpsListener != null) {
-            gpsListener = null;
+            stopGpsUpdates();
             status.setText("現在地を取得できませんでした（タイムアウト）。電波の良い場所で再試行してください");
         }
     };
+
+    // GPS リスナーを LocationManager から解除して破棄する (登録していなくても安全)
+    private void stopGpsUpdates() {
+        if (gpsListener == null) return;
+        try {
+            LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
+            if (lm != null) lm.removeUpdates(gpsListener);
+        } catch (Exception ignored) {}
+        gpsListener = null;
+    }
 
     // LocationListener は名前付きクラスにする (匿名クラスは d8 が処理できないため)
     private static class GpsListener implements android.location.LocationListener {
@@ -1082,12 +1095,12 @@ public class MainActivity extends Activity {
             } else if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
                 lm.requestSingleUpdate(LocationManager.NETWORK_PROVIDER, gpsListener, Looper.getMainLooper());
             } else {
-                gpsListener = null;
+                stopGpsUpdates();
                 status.setText("位置情報が無効です。端末の設定で位置情報を有効にしてください");
                 return;
             }
         } catch (SecurityException e) {
-            gpsListener = null;
+            stopGpsUpdates();
             status.setText("位置情報の許可が得られなかったため、現在地を登録できません");
             return;
         }
@@ -1096,7 +1109,7 @@ public class MainActivity extends Activity {
 
     private void onGpsFix(android.location.Location fix) {
         mainHandler.removeCallbacks(gpsTimeout);
-        gpsListener = null;
+        stopGpsUpdates();
         final double lat = fix.getLatitude(), lon = fix.getLongitude();
         final AegisData.Pref pref = AegisData.nearestPref(lat, lon);
         status.setText("現在地を取得しました（都道府県は " + pref.name + " と推定）。地域を取得中…");
@@ -1106,16 +1119,19 @@ public class MainActivity extends Activity {
             catch (Exception ignored) {}
             List<String> result = names;
             mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) return; // 画面が閉じていたらダイアログを出さない
                 if (result.isEmpty()) {
                     status.setText("地域区分を取得できなかったため、現在地を登録できませんでした");
                     return;
                 }
-                new AlertDialog.Builder(this)
-                        .setTitle(pref.name + " の地域区分を選択")
-                        .setItems(result.toArray(new String[0]), (dialog, which) ->
-                                registerGpsLocation(pref, lat, lon, result.get(which)))
-                        .setNegativeButton("キャンセル", null)
-                        .show();
+                try {
+                    new AlertDialog.Builder(this)
+                            .setTitle(pref.name + " の地域区分を選択")
+                            .setItems(result.toArray(new String[0]), (dialog, which) ->
+                                    registerGpsLocation(pref, lat, lon, result.get(which)))
+                            .setNegativeButton("キャンセル", null)
+                            .show();
+                } catch (Exception ignored) {}
             });
         });
     }
@@ -1368,11 +1384,13 @@ public class MainActivity extends Activity {
         mainHandler.removeCallbacks(monitorTick);
         mainHandler.removeCallbacks(eewTick);
         mainHandler.removeCallbacks(gpsTimeout);
+        stopGpsUpdates();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        stopGpsUpdates();
         executor.shutdownNow();
     }
 }

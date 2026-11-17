@@ -731,7 +731,7 @@ public final class AegisData {
         if (times == null || temps == null || codes == null) return new java.util.ArrayList<>();
         return buildHourRows(jsonStrings(times), jsonDoubles(temps, 0),
                 jsonDoubles(hourly.optJSONArray("precipitation_probability"), -1), jsonInts(codes),
-                System.currentTimeMillis(), java.util.TimeZone.getDefault());
+                System.currentTimeMillis(), java.util.TimeZone.getTimeZone("Asia/Tokyo"));
     }
 
     private static java.util.List<DayRow> dayRowsFromJson(JSONObject daily) {
@@ -1606,6 +1606,33 @@ public final class AegisData {
         return now - eventMillis <= FRESH_WINDOW_MILLIS && eventMillis - now <= 5 * 60 * 1000L;
     }
 
+    // 初回同期 (通知済み ID がまだ空) かどうか。初回はイベントを登録のみ行い通知しない
+    // (シーディング: サーバー版・Windows Java版と同じ挙動に揃える)
+    public static boolean isFirstSync(java.util.Collection<String> notifiedIds) {
+        return notifiedIds == null || notifiedIds.isEmpty();
+    }
+
+    // 1イベント分の通知判定 (純粋関数)。ID の登録そのものは呼び出し側が行う
+    // seeding=true (初回同期) の間は常に false (登録のみ)
+    public static boolean shouldNotifyEvent(SyncEvent ev, boolean seeding, boolean allowed,
+                                            int quakeThresholdScale, int warnMode, long now) {
+        if (ev == null || seeding || !allowed) return false;
+        if (!isFreshEvent(ev.eventMillis, now)) return false; // 1時間超は通知しない
+        switch (ev.kind) {
+            case "quake":
+                return shouldNotifyQuake(ev.maxScale, quakeThresholdScale);
+            case "warning":
+                return warningNotifiable(ev.hasSpecial, ev.hasWarning, warnMode);
+            default: // tsunami / eew は常時通知
+                return true;
+        }
+    }
+
+    // EEW の重複排除 ID: 報の時刻ではなく発生時刻ベースにする (続報で再通知しない。C#版と同方針)
+    public static String eewEventId(long originMillis) {
+        return "eew:" + originMillis;
+    }
+
     // 通知済み ID リストを上限件数に切り詰める (末尾 = 新しいものを残す)
     public static java.util.List<String> pruneIds(java.util.List<String> ids, int max) {
         if (ids.size() <= max) return new java.util.ArrayList<>(ids);
@@ -1735,7 +1762,7 @@ public final class AegisData {
         EewInfo info = eewInfo();
         if (info == null) return null;
         String title = info.isCancel ? "🚨 緊急地震速報（取消）" : "🚨 緊急地震速報";
-        return new SyncEvent("eew", "eew:" + info.reportMillis, title, eewStaticBody(info), !info.isCancel, info.originMillis);
+        return new SyncEvent("eew", eewEventId(info.originMillis), title, eewStaticBody(info), !info.isCancel, info.originMillis);
     }
 
     // 警報: 地点に発表中の警報・注意報があれば1件返す (なければ null)
