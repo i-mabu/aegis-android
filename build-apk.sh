@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# AEGIS Android - オフライン手動ビルド (Gradle/AGPを使わず aapt2 + javac + d8 でAPKを作る)
-# 必要: JDK 17+ と Android SDK (platforms;android-34, build-tools;34.0.0)
+# AEGIS Android - オフライン手動ビルド (Gradle/AGPを使わず aapt2 + kotlinc + d8 でAPKを作る)
+# 必要: JDK 17+ と Android SDK (platforms;android-34, build-tools;34.0.0) と Kotlin コンパイラ
 # 使い方: ANDROID_SDK_ROOT=~/android-sdk ./build-apk.sh
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -12,10 +12,26 @@ AJAR="$SDK/platforms/android-34/android.jar"
 [ -f "$AJAR" ] || { echo "android.jar が見つかりません: $AJAR" >&2; exit 1; }
 [ -x "$BT/aapt2" ] || { echo "aapt2 が見つかりません: $BT" >&2; exit 1; }
 
+# JAVA_HOME 未設定なら VM 内の JDK を使う (kotlinc の起動にも java が必要)
+if [ -z "${JAVA_HOME:-}" ] && [ -d "$HOME/workspace/tools/jdk-21" ]; then
+  JAVA_HOME="$HOME/workspace/tools/jdk-21"
+fi
+
 JAVA_BIN="${JAVA_HOME:+$JAVA_HOME/bin/}"
 JAVAC="${JAVA_BIN}javac"; KEYTOOL="${JAVA_BIN}keytool"
 command -v "$JAVAC" >/dev/null 2>&1 || JAVAC=javac
 command -v "$KEYTOOL" >/dev/null 2>&1 || KEYTOOL=keytool
+[ -n "$JAVA_BIN" ] && export PATH="${JAVA_BIN}:$PATH"
+
+# Kotlin コンパイラ (KOTLINC 環境変数 → VM 内の導入済みコンパイラ → PATH の順に探す)
+KOTLINC="${KOTLINC:-}"
+if [ -z "$KOTLINC" ] && [ -x "$HOME/workspace/tools/kotlin/bin/kotlinc" ]; then
+  KOTLINC="$HOME/workspace/tools/kotlin/bin/kotlinc"
+fi
+if [ -z "$KOTLINC" ]; then KOTLINC="$(command -v kotlinc || true)"; fi
+{ [ -n "$KOTLINC" ] && [ -x "$KOTLINC" ]; } || { echo "kotlinc が見つかりません" >&2; exit 1; }
+STDLIB="$(dirname "$KOTLINC")/../lib/kotlin-stdlib.jar"
+[ -f "$STDLIB" ] || { echo "kotlin-stdlib.jar が見つかりません: $STDLIB" >&2; exit 1; }
 
 BUILD=build/manual
 rm -rf "$BUILD"
@@ -33,12 +49,15 @@ sed 's|<manifest xmlns:android="http://schemas.android.com/apk/res/android"|<man
   --manifest "$BUILD/AndroidManifest.xml" "$BUILD/compiled.zip" \
   --java "$BUILD/gen" --min-sdk-version 26 --target-sdk-version 34
 
-echo "[3/6] javac"
-find app/src/main/java "$BUILD/gen" -name '*.java' > "$BUILD/sources.txt"
-"$JAVAC" --release 17 -encoding UTF-8 -cp "$AJAR" -d "$BUILD/classes" @"$BUILD/sources.txt"
+echo "[3/6] kotlinc (+ javac for R.java)"
+# kotlinc は aapt2 生成の R.java をシンボル解決のためだけに読み、クラスは出力しないため、
+# R.java のクラスは従来どおり javac で別途コンパイルする
+"$KOTLINC" -cp "$AJAR" -d "$BUILD/classes" \
+  $(find app/src/main/java -name '*.kt') $(find "$BUILD/gen" -name '*.java')
+"$JAVAC" --release 17 -encoding UTF-8 -cp "$AJAR" -d "$BUILD/classes" $(find "$BUILD/gen" -name '*.java')
 
-echo "[4/6] d8"
-"$BT/d8" --min-api 26 --output "$BUILD/dex" $(find "$BUILD/classes" -name '*.class')
+echo "[4/6] d8 (kotlin-stdlib を同梱)"
+"$BT/d8" --min-api 26 --output "$BUILD/dex" $(find "$BUILD/classes" -name '*.class') "$STDLIB"
 
 echo "[5/6] package + zipalign"
 cp "$BUILD/app-unsigned.apk" "$BUILD/app-with-dex.apk"

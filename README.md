@@ -1,7 +1,7 @@
 # 🛡️ AEGIS Android クライアント
 
 地震・津波・気象 自律アシスタント **AEGIS** の Android アプリ（クライアント）です。
-Java で実装し、外部ライブラリ依存ゼロ（Android標準の `org.json` / `HttpURLConnection` のみ）。
+Kotlin で実装し、外部ライブラリ依存ゼロ（Android標準の `org.json` / `HttpURLConnection` のみ。Kotlin 標準ライブラリは APK に同梱）。
 
 - パッケージ: `jp.aegis.client` / アプリ名: AEGIS
 - 対応: Android 8.0 (API 26) 以上、target API 34
@@ -45,7 +45,7 @@ Gradle/AGPを使わず、Android SDK のツールだけでAPKを作ります。
 ANDROID_SDK_ROOT=/path/to/android-sdk ./build-apk.sh
 # -> dist/aegis-client.apk (デバッグ署名)
 ```
-手順は aapt2 compile/link → javac (--release 17) → d8 → zipalign → apksigner です。
+手順は aapt2 compile/link → kotlinc（aapt2 生成の R.java のみ javac）→ d8（kotlin-stdlib.jar を同梱）→ zipalign → apksigner です。Kotlin コンパイラは `KOTLINC` 環境変数 → `~/workspace/tools/kotlin` → PATH の順に探します。
 
 ### 方法B: Gradle / Android Studio
 Android Studio でこのフォルダを開くか、コマンドラインで:
@@ -169,3 +169,11 @@ aegis-android/
 
 - **レーダーに「Zoom Level Not Supported」のバナーが重なる問題を修正**: RainViewer のレーダータイルはズーム7までしか提供されず、ズーム8ではタイル自体にバナー画像が返ってきていた。ベース地図（地理院タイル）は従来どおりズーム8の 3×3 合成のまま、雨タイルだけズーム7で取得し、各タイルを 512×512 に拡大して重ねるようにした
 - 雨タイルのカバー範囲計算は純粋関数 `rainTilesFor` に切り出し、単体テスト4件を追加（中心タイルが偶数/奇数の両ケースでタイル集合と描画オフセットを検証、計111件）
+
+## v1.7.0 の変更点（2026-11-17、Kotlin 書き換え）
+
+- **全ソースを Java から Kotlin へ書き換え**（純粋な言語書き換えで、挙動は v1.6.2 と完全同一。機能変更なし）: `AegisData` / `MainActivity` / `AegisSync` / `SyncReceiver` / `BootReceiver` の全5ファイルと、単体テスト `tests/TestMain.kt`（111件、全件パスを Kotlin 版でも確認）
+- パッケージ名 `jp.aegis.client` とコンポーネントのクラス名は維持し、AndroidManifest の変更はバージョン表記のみ（versionCode 11 / versionName 1.7.0）。署名証明書も従来と同一のため、v1.6.2 からの上書きインストールが可能
+- **ビルド方式**: 従来の手動パイプライン（build-apk.sh）のコンパイル段を kotlinc（2.0.21）に差し替え。aapt2 生成の R.java はシンボル解決のため kotlinc に渡し、クラス自体は従来どおり javac でコンパイル。Gradle/AGP への移行はなし（方法Bの Gradle ビルドは Kotlin 未対応のため、方法Aを使ってください）
+- **APK サイズ増**: Kotlin 標準ライブラリ（kotlin-stdlib.jar）を dex 化して同梱するため、APK は 78,493 バイト → 791,197 バイトに増加（想定内）
+- CI（GitHub Actions）も Kotlin 対応に更新: 公式 kotlin-compiler 2.0.21 の zip を取得するステップを追加し、単体テストは kotlinc でコンパイル・実行するようにした（単一ジョブの軽量構成は維持）

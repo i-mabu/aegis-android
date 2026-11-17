@@ -1,6 +1,6 @@
 name: CI
 
-# 軽量CI: 単一ジョブでオフライン手動ビルド (build-apk.sh) を実行し、APKを検証する。
+# 軽量CI: 単一ジョブでオフライン手動ビルド (build-apk.sh, Kotlin) を実行し、APKを検証する。
 # main への push / PR で実行し、ドキュメントだけの変更では実行しない。
 on:
   push:
@@ -28,6 +28,12 @@ jobs:
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0"
+      - name: Install Kotlin compiler
+        run: |
+          curl -sL -o /tmp/kotlin-compiler.zip https://github.com/JetBrains/kotlin/releases/download/v2.0.21/kotlin-compiler-2.0.21.zip
+          unzip -q /tmp/kotlin-compiler.zip -d /tmp/kotlin-compiler
+          echo "KOTLINC=/tmp/kotlin-compiler/kotlinc/bin/kotlinc" >> "$GITHUB_ENV"
+          echo "KOTLIN_STDLIB=/tmp/kotlin-compiler/kotlinc/lib/kotlin-stdlib.jar" >> "$GITHUB_ENV"
       - name: Build APK (offline manual pipeline)
         run: |
           chmod +x build-apk.sh
@@ -35,8 +41,8 @@ jobs:
       - name: Run unit tests (pure functions, no network)
         run: |
           mkdir -p /tmp/aegis-test
-          javac -cp build/manual/classes:"$ANDROID_HOME/platforms/android-34/android.jar" -d /tmp/aegis-test tests/TestMain.java
-          java -cp /tmp/aegis-test:build/manual/classes:"$ANDROID_HOME/platforms/android-34/android.jar" TestMain
+          "$KOTLINC" -cp build/manual/classes:"$ANDROID_HOME/platforms/android-34/android.jar":"$KOTLIN_STDLIB" -d /tmp/aegis-test tests/TestMain.kt
+          java -cp /tmp/aegis-test:build/manual/classes:"$ANDROID_HOME/platforms/android-34/android.jar":"$KOTLIN_STDLIB" TestMain
       - name: Verify APK
         run: |
           "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging dist/aegis-client.apk | head -5
