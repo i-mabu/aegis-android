@@ -112,18 +112,76 @@ public class MainActivity extends Activity {
         loadCurrent();
     }
 
+    private String cacheKey(String tab, String mode, String server) {
+        return "cache_" + tab + "_" + mode + "_" + (server == null ? "" : server.hashCode());
+    }
+
+    // 前回の表示内容をキャッシュから復元する (体感速度の改善: まず表示して裏で更新)
+    private boolean renderCache(String key) {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String json = prefs.getString(key, null);
+        if (json == null) return false;
+        try {
+            org.json.JSONObject root = new org.json.JSONObject(json);
+            org.json.JSONArray sa = root.optJSONArray("sections");
+            org.json.JSONArray qa = root.optJSONArray("quakes");
+            List<AegisData.Section> sections = new ArrayList<>();
+            List<AegisData.Quake> quakes = new ArrayList<>();
+            if (sa != null) {
+                for (int i = 0; i < sa.length(); i++) {
+                    org.json.JSONObject o = sa.getJSONObject(i);
+                    sections.add(new AegisData.Section(o.optString("t"), o.optString("b"), o.optString("l")));
+                }
+            }
+            if (qa != null) {
+                for (int i = 0; i < qa.length(); i++) {
+                    org.json.JSONObject o = qa.getJSONObject(i);
+                    quakes.add(new AegisData.Quake(o.optString("p"), o.optString("d"), o.optString("s"), o.optInt("m")));
+                }
+            }
+            if (sections.isEmpty() && quakes.isEmpty()) return false;
+            render(sections, quakes);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void saveCache(String key, List<AegisData.Section> sections, List<AegisData.Quake> quakes) {
+        // 取得失敗を含む内容はキャッシュしない
+        for (AegisData.Section s : sections) {
+            if (s.body.contains("取得できませんでした") || s.title.contains("取得エラー")) return;
+        }
+        try {
+            org.json.JSONArray sa = new org.json.JSONArray();
+            for (AegisData.Section s : sections) {
+                sa.put(new org.json.JSONObject().put("t", s.title).put("b", s.body).put("l", s.level));
+            }
+            org.json.JSONArray qa = new org.json.JSONArray();
+            for (AegisData.Quake q : quakes) {
+                qa.put(new org.json.JSONObject().put("p", q.place).put("d", q.detail).put("s", q.sev).put("m", q.maxScale));
+            }
+            org.json.JSONObject root = new org.json.JSONObject().put("sections", sa).put("quakes", qa);
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(key, root.toString()).apply();
+        } catch (Exception ignored) {}
+    }
+
     private void loadCurrent() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         String mode = prefs.getString(KEY_MODE, "direct");
         String server = prefs.getString(KEY_SERVER, "http://10.0.2.2:8765");
         String tab = currentTab;
-        status.setText("取得中…");
-        container.removeAllViews();
-        TextView loading = new TextView(this);
-        loading.setText("読み込んでいます…");
-        loading.setTextColor(Color.parseColor("#8A94A6"));
-        loading.setTextSize(14);
-        container.addView(loading);
+        String key = cacheKey(tab, mode, server);
+        boolean cached = renderCache(key);
+        status.setText(cached ? "キャッシュを表示中（更新中…）" : "取得中…");
+        if (!cached) {
+            container.removeAllViews();
+            TextView loading = new TextView(this);
+            loading.setText("読み込んでいます…");
+            loading.setTextColor(Color.parseColor("#8A94A6"));
+            loading.setTextSize(14);
+            container.addView(loading);
+        }
         executor.execute(() -> {
             List<AegisData.Section> sections = new ArrayList<>();
             List<AegisData.Quake> quakes = new ArrayList<>();
@@ -152,6 +210,7 @@ public class MainActivity extends Activity {
             String now = new SimpleDateFormat("HH:mm:ss", Locale.JAPAN).format(new Date());
             mainHandler.post(() -> {
                 render(resultSections, resultQuakes);
+                saveCache(key, resultSections, resultQuakes);
                 status.setText("最終更新: " + now + "（" + ("server".equals(mode) ? "サーバー" : "直接取得") + "）");
             });
         });

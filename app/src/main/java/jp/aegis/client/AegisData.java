@@ -28,21 +28,29 @@ public final class AegisData {
     public static final Location OMIYA = new Location("大宮", 35.9064, 139.6239, "110000", "南部");
     public static final Location[] LOCATIONS = {TAKASAKI, OMIYA};
 
+    // 並列取得用の共有プール (天気の3要素や複数地点を同時に取る)
+    static final java.util.concurrent.ExecutorService FETCH_POOL = java.util.concurrent.Executors.newCachedThreadPool();
+
     // ----- 1.1 HTTP -----
     public static String fetch(String urlStr) throws Exception {
-        // 一時的な失敗に強くするため最大3回までリトライする (1秒→2秒バックオフ)
+        // UI表示用: リトライは最大2回まで (待ち時間の暴走を防ぐ)。gzip で転送量も削減する
         Exception last = null;
-        for (int attempt = 0; attempt < 3; attempt++) {
+        for (int attempt = 0; attempt < 2; attempt++) {
             HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
             try {
-                conn.setConnectTimeout(15000);
-                conn.setReadTimeout(25000);
-                conn.setRequestProperty("User-Agent", "AEGIS-Android/1.2");
+                conn.setConnectTimeout(10000);
+                conn.setReadTimeout(20000);
+                conn.setRequestProperty("User-Agent", "AEGIS-Android/1.3");
                 conn.setRequestProperty("Accept", "application/json");
+                conn.setRequestProperty("Accept-Encoding", "gzip");
                 int code = conn.getResponseCode();
                 if (code == 200) {
+                    java.io.InputStream in = conn.getInputStream();
+                    if ("gzip".equalsIgnoreCase(conn.getContentEncoding())) {
+                        in = new java.util.zip.GZIPInputStream(in);
+                    }
                     StringBuilder sb = new StringBuilder();
-                    try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                    try (BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
                         String line;
                         while ((line = br.readLine()) != null) sb.append(line);
                     }
@@ -57,7 +65,7 @@ public final class AegisData {
             } finally {
                 conn.disconnect();
             }
-            if (attempt < 2) Thread.sleep(1000L * (attempt + 1));
+            if (attempt < 1) Thread.sleep(1000L);
         }
         throw last != null ? last : new IllegalStateException("fetch failed");
     }
@@ -194,7 +202,21 @@ public final class AegisData {
         WMO.put("80", "にわか雨"); WMO.put("81", "にわか雨"); WMO.put("82", "激しい雨"); WMO.put("95", "雷雨");
     }
 
-    public static String weatherText(Location loc) throws Exception {
+    public static String weatherText(Location loc) {
+        // 予報・現在・警報の3要素は独立しているので並列取得し、順序どおりに結合する
+        java.util.concurrent.Future<String> f1 = FETCH_POOL.submit(() -> forecastPart(loc));
+        java.util.concurrent.Future<String> f2 = FETCH_POOL.submit(() -> currentPart(loc));
+        java.util.concurrent.Future<String> f3 = FETCH_POOL.submit(() -> warningPart(loc));
+        StringBuilder sb = new StringBuilder();
+        try {
+            sb.append(f1.get()).append(f2.get()).append(f3.get());
+        } catch (Exception e) {
+            sb.append("（天気を取得できませんでした）\n");
+        }
+        return sb.toString();
+    }
+
+    private static String forecastPart(Location loc) {
         StringBuilder sb = new StringBuilder();
         // 気象庁 予報
         try {
@@ -217,6 +239,11 @@ public final class AegisData {
         } catch (Exception e) {
             sb.append("（天気予報を取得できませんでした：").append(friendlyError(e)).append("）\n");
         }
+        return sb.toString();
+    }
+
+    private static String currentPart(Location loc) {
+        StringBuilder sb = new StringBuilder();
         // Open-Meteo 現在
         try {
             String url = "https://api.open-meteo.com/v1/forecast?latitude=" + loc.lat + "&longitude=" + loc.lon
@@ -237,6 +264,11 @@ public final class AegisData {
         } catch (Exception e) {
             sb.append("（現在の気象を取得できませんでした：").append(friendlyError(e)).append("）\n");
         }
+        return sb.toString();
+    }
+
+    private static String warningPart(Location loc) {
+        StringBuilder sb = new StringBuilder();
         // 警報・注意報 (発表中の名称をコード表から復元して表示)
         try {
             JSONObject warn = new JSONObject(fetch("https://www.jma.go.jp/bosai/warning/data/warning/" + loc.prefCode + ".json"));
@@ -306,12 +338,11 @@ public final class AegisData {
     // カードUI用: 地点ごとの天気は2地点を並列取得して待ち時間を短縮する
     public static java.util.List<Section> briefingSections() {
         java.util.List<Section> out = new java.util.ArrayList<>();
-        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
-        try {
+        {
             java.util.List<java.util.concurrent.Future<String>> futures = new java.util.ArrayList<>();
             for (Location loc : LOCATIONS) {
                 final Location l = loc;
-                futures.add(pool.submit(() -> weatherText(l)));
+                futures.add(FETCH_POOL.submit(() -> weatherText(l)));
             }
             for (int i = 0; i < LOCATIONS.length; i++) {
                 String body;
@@ -320,8 +351,6 @@ public final class AegisData {
                 String level = body.contains("発表中") ? "warn" : "info";
                 out.add(new Section("☀ 天気予報（" + LOCATIONS[i].name + "）", body.trim(), level));
             }
-        } finally {
-            pool.shutdownNow();
         }
         try {
             String t = tsunamiText();
