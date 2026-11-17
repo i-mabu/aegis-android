@@ -114,13 +114,11 @@
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <TextView
-            android:id="@+id/content"
+        <LinearLayout
+            android:id="@+id/contentContainer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:padding="14dp"
-            android:textColor="#E6EDF3"
-            android:textSize="14sp"
-            android:lineSpacingMultiplier="1.25" />
+            android:orientation="vertical"
+            android:padding="12dp" />
     </ScrollView>
 </LinearLayout>
