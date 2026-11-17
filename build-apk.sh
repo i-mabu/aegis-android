@@ -46,7 +46,7 @@ cp "$BUILD/app-unsigned.apk" "$BUILD/app-with-dex.apk"
 "$BT/zipalign" -f -p 4 "$BUILD/app-with-dex.apk" "$BUILD/app-aligned.apk"
 
 echo "[6/6] sign (debug keystore)"
-KS="$BUILD/debug.keystore"
+KS="debug.keystore"
 if [ ! -f "$KS" ]; then
   "$KEYTOOL" -genkeypair -keystore "$KS" -storepass android -keypass android \
     -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \

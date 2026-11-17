@@ -87,6 +87,12 @@
             android:textColorHint="#8A94A6" />
 
         <Button
+            android:id="@+id/testConnection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="接続テスト（サーバーURL）" />
+
+        <Button
             android:id="@+id/saveSettings"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

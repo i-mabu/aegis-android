@@ -10,6 +10,6 @@ local.properties
 *.iml
 .DS_Store
 
-# ===== Signing (debug keystore is generated under build/) =====
+# ===== Signing (debug keystore is kept at repo root for a stable signature) =====
 *.keystore
 !debug.keystore

@@ -30,19 +30,36 @@ public final class AegisData {
 
     // ----- 1.1 HTTP -----
     public static String fetch(String urlStr) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(15000);
-        conn.setRequestProperty("User-Agent", "AEGIS-Android/1.0");
-        conn.setRequestProperty("Accept", "application/json");
-        int code = conn.getResponseCode();
-        if (code != 200) throw new IllegalStateException("HTTP " + code);
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = br.readLine()) != null) sb.append(line);
+        // 一時的な失敗に強くするため最大3回までリトライする (1秒→2秒バックオフ)
+        Exception last = null;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+            try {
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(15000);
+                conn.setRequestProperty("User-Agent", "AEGIS-Android/1.1");
+                conn.setRequestProperty("Accept", "application/json");
+                int code = conn.getResponseCode();
+                if (code == 200) {
+                    StringBuilder sb = new StringBuilder();
+                    try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = br.readLine()) != null) sb.append(line);
+                    }
+                    return sb.toString();
+                }
+                if (code < 500) throw new IllegalStateException("HTTP " + code);
+                last = new IllegalStateException("HTTP " + code);
+            } catch (IllegalStateException e) {
+                throw e;
+            } catch (Exception e) {
+                last = e;
+            } finally {
+                conn.disconnect();
+            }
+            if (attempt < 2) Thread.sleep(1000L * (attempt + 1));
         }
-        return sb.toString();
+        throw last != null ? last : new IllegalStateException("fetch failed");
     }
 
     // ===== 2. 震度・重要度 =====
@@ -182,13 +199,56 @@ public final class AegisData {
         } catch (Exception e) {
             sb.append("（現在の気象の取得に失敗: ").append(e.getMessage()).append("）\n");
         }
-        // 警報・注意報 (発表中の名称だけ簡易表示)
+        // 警報・注意報 (発表中の名称をコード表から復元して表示)
         try {
             JSONObject warn = new JSONObject(fetch("https://www.jma.go.jp/bosai/warning/data/warning/" + loc.prefCode + ".json"));
+            java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+            JSONArray areaTypes = warn.optJSONArray("areaTypes");
+            if (areaTypes != null) {
+                for (int i = 0; i < areaTypes.length(); i++) {
+                    JSONArray areas = areaTypes.getJSONObject(i).optJSONArray("areas");
+                    if (areas == null) continue;
+                    for (int j = 0; j < areas.length(); j++) {
+                        JSONObject area = areas.getJSONObject(j);
+                        if (!loc.areaName.equals(area.optString("name"))) continue;
+                        JSONArray ws = area.optJSONArray("warnings");
+                        if (ws == null) continue;
+                        for (int k = 0; k < ws.length(); k++) {
+                            JSONObject w = ws.getJSONObject(k);
+                            if ("解除".equals(w.optString("status"))) continue;
+                            String nm = WARNING_CODES.get(w.optString("code"));
+                            if (nm != null) names.add(nm);
+                        }
+                    }
+                }
+            }
+            if (!names.isEmpty()) {
+                sb.append("⚠ 発表中の警報・注意報: ").append(String.join("、", names)).append("\n");
+            }
             String headline = warn.optString("headlineText");
             if (!headline.isEmpty()) sb.append("⚠ ").append(headline).append("\n");
         } catch (Exception ignored) {}
         return sb.toString();
+    }
+
+    // 気象庁 警報・注意報コード表 (主要なもの)
+    static final Map<String, String> WARNING_CODES = new HashMap<>();
+    static {
+        WARNING_CODES.put("02", "暴風雪警報"); WARNING_CODES.put("03", "大雨警報");
+        WARNING_CODES.put("04", "洪水警報"); WARNING_CODES.put("05", "暴風警報");
+        WARNING_CODES.put("06", "大雪警報"); WARNING_CODES.put("07", "波浪警報");
+        WARNING_CODES.put("08", "高潮警報"); WARNING_CODES.put("10", "大雨注意報");
+        WARNING_CODES.put("12", "大雪注意報"); WARNING_CODES.put("13", "風雪注意報");
+        WARNING_CODES.put("14", "雷注意報"); WARNING_CODES.put("15", "強風注意報");
+        WARNING_CODES.put("16", "波浪注意報"); WARNING_CODES.put("18", "洪水注意報");
+        WARNING_CODES.put("19", "高潮注意報"); WARNING_CODES.put("20", "濃霧注意報");
+        WARNING_CODES.put("21", "乾燥注意報"); WARNING_CODES.put("22", "なだれ注意報");
+        WARNING_CODES.put("23", "低温注意報"); WARNING_CODES.put("24", "霜注意報");
+        WARNING_CODES.put("25", "着氷注意報"); WARNING_CODES.put("26", "着雪注意報");
+        WARNING_CODES.put("27", "融雪注意報"); WARNING_CODES.put("29", "氷結注意報");
+        WARNING_CODES.put("32", "暴風雪特別警報"); WARNING_CODES.put("33", "大雨特別警報");
+        WARNING_CODES.put("35", "大雪特別警報"); WARNING_CODES.put("36", "暴風特別警報");
+        WARNING_CODES.put("37", "波浪特別警報"); WARNING_CODES.put("38", "高潮特別警報");
     }
 
     // ===== 5. ブリーフィング =====
