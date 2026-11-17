@@ -175,6 +175,180 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:paddingTop="16dp"
+            android:text="🔔 バックグラウンド同期と通知"
+            android:textColor="#FFFFFF"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/bgSyncStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="4dp"
+            android:text="バックグラウンド同期: -"
+            android:textColor="#D8DEE9"
+            android:textSize="12sp" />
+
+        <Switch
+            android:id="@+id/bgSyncSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="バックグラウンド同期（アプリを閉じていても新着を通知）"
+            android:textColor="#FFFFFF" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="6dp"
+            android:text="同期間隔"
+            android:textColor="#8A94A6"
+            android:textSize="11sp" />
+
+        <RadioGroup
+            android:id="@+id/syncIntervalGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/interval15"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="15分"
+                android:textColor="#FFFFFF" />
+
+            <RadioButton
+                android:id="@+id/interval30"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="30分"
+                android:textColor="#FFFFFF" />
+
+            <RadioButton
+                android:id="@+id/interval60"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="60分"
+                android:textColor="#FFFFFF" />
+        </RadioGroup>
+
+        <TextView
+            android:id="@+id/notifyPermStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="6dp"
+            android:text="通知の許可: -"
+            android:textColor="#D8DEE9"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/notifyPermButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="通知の許可をリクエスト" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="6dp"
+            android:text="地震の通知しきい値"
+            android:textColor="#8A94A6"
+            android:textSize="11sp" />
+
+        <RadioGroup
+            android:id="@+id/quakeThresholdGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/thrScale10"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="震度1"
+                android:textColor="#FFFFFF" />
+
+            <RadioButton
+                android:id="@+id/thrScale20"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="震度2"
+                android:textColor="#FFFFFF" />
+
+            <RadioButton
+                android:id="@+id/thrScale30"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="震度3"
+                android:textColor="#FFFFFF" />
+
+            <RadioButton
+                android:id="@+id/thrScale40"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="震度4"
+                android:textColor="#FFFFFF" />
+
+            <RadioButton
+                android:id="@+id/thrScale45"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="震度5弱"
+                android:textColor="#FFFFFF" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="6dp"
+            android:text="警報の通知範囲"
+            android:textColor="#8A94A6"
+            android:textSize="11sp" />
+
+        <RadioGroup
+            android:id="@+id/warnModeGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <RadioButton
+                android:id="@+id/warnAlertsOnly"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="特別警報・警報のみ"
+                android:textColor="#FFFFFF" />
+
+            <RadioButton
+                android:id="@+id/warnIncludeAdvisory"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="注意報も含む"
+                android:textColor="#FFFFFF" />
+        </RadioGroup>
+
+        <Switch
+            android:id="@+id/briefingNotifySwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="朝夕ブリーフィング通知（7:00 / 21:00、任意）"
+            android:textColor="#FFFFFF" />
+
+        <Button
+            android:id="@+id/notifyTest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="🔔 通知テスト" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="緊急地震速報と津波は常に通知します。地震は上のしきい値以上、警報は発表・変更時に通知します。通知済みの情報は再通知しません。発生から1時間以上たった情報は通知しません。"
+            android:textColor="#8A94A6"
+            android:textSize="11sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:paddingTop="14dp"
             android:text="📍 監視地点の追加（任意地点）"
             android:textColor="#FFFFFF"

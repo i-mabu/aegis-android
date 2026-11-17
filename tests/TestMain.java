@@ -67,6 +67,109 @@ public class TestMain {
         check("🌧".equals(AegisData.weatherEmoji(61)), "weatherEmoji rain");
         check("⛈".equals(AegisData.weatherEmoji(95)), "weatherEmoji thunder");
 
+        // ----- v1.6.0: バックグラウンド同期・通知判定 -----
+        // 地震の通知しきい値 (境界値)
+        check(AegisData.shouldNotifyQuake(30, 30), "shouldNotifyQuake at threshold");
+        check(AegisData.shouldNotifyQuake(45, 30), "shouldNotifyQuake above threshold");
+        check(!AegisData.shouldNotifyQuake(20, 30), "shouldNotifyQuake below threshold");
+        check(!AegisData.shouldNotifyQuake(-1, 10), "shouldNotifyQuake unknown scale");
+        check(AegisData.shouldNotifyQuake(45, 45), "shouldNotifyQuake 5弱 at 5弱");
+
+        // 警報コードの格付け
+        check(AegisData.warningCodeRank("33") == 2, "warningCodeRank special (大雨特別)");
+        check(AegisData.warningCodeRank("38") == 2, "warningCodeRank special (大雪特別)");
+        check(AegisData.warningCodeRank("03") == 1, "warningCodeRank warning (大雨警報)");
+        check(AegisData.warningCodeRank("10") == 0, "warningCodeRank advisory (大雨注意報)");
+        check(AegisData.warningCodeRank("99") == 0, "warningCodeRank unknown -> advisory");
+
+        // 警報の通知可否 (モード別)
+        check(AegisData.warningNotifiable(false, true, AegisData.WARN_MODE_ALERTS_ONLY), "warningNotifiable warning in alerts-only");
+        check(AegisData.warningNotifiable(true, false, AegisData.WARN_MODE_ALERTS_ONLY), "warningNotifiable special in alerts-only");
+        check(!AegisData.warningNotifiable(false, false, AegisData.WARN_MODE_ALERTS_ONLY), "warningNotifiable advisory-only excluded");
+        check(AegisData.warningNotifiable(false, false, AegisData.WARN_MODE_INCLUDE_ADVISORY), "warningNotifiable advisory-only included");
+
+        // 鮮度判定 (フラッド防止: 1時間超は通知しない)
+        long now = 1_700_000_000_000L;
+        check(AegisData.isFreshEvent(now - 30 * 60 * 1000L, now), "isFreshEvent 30min ago");
+        check(AegisData.isFreshEvent(now - 60 * 60 * 1000L, now), "isFreshEvent exactly 1h ago");
+        check(!AegisData.isFreshEvent(now - 61 * 60 * 1000L, now), "isFreshEvent 61min ago is stale");
+        check(!AegisData.isFreshEvent(0, now), "isFreshEvent unknown time");
+        check(AegisData.isFreshEvent(now + 60 * 1000L, now), "isFreshEvent slight future (clock skew)");
+        check(!AegisData.isFreshEvent(now + 10 * 60 * 1000L, now), "isFreshEvent far future rejected");
+
+        // 通知済み ID の切り詰め (末尾 = 新しいものを残す)
+        java.util.List<String> ids = new java.util.ArrayList<>();
+        for (int i = 0; i < 250; i++) ids.add("id" + i);
+        java.util.List<String> pruned = AegisData.pruneIds(ids, AegisData.MAX_NOTIFIED_IDS);
+        check(pruned.size() == 200 && pruned.get(0).equals("id50") && pruned.get(199).equals("id249"), "pruneIds keeps newest 200");
+        check(AegisData.pruneIds(ids.subList(0, 3), 200).size() == 3, "pruneIds under limit unchanged");
+
+        // 通知済み ID の保存形式 (往復・重複排除・空)
+        java.util.List<String> roundtrip = AegisData.splitIds(AegisData.joinIds(java.util.Arrays.asList("a", "b", "c")));
+        check(roundtrip.equals(java.util.Arrays.asList("a", "b", "c")), "ids join/split roundtrip");
+        check(AegisData.splitIds("").isEmpty() && AegisData.splitIds(null).isEmpty(), "splitIds empty");
+        check(AegisData.splitIds("a\na\nb").size() == 2, "splitIds dedupes");
+
+        // 警報イベント ID はコードの順序に依存しない
+        String wid1 = AegisData.warningEventId("100000", "2026-11-17T11:00:00+09:00", java.util.Arrays.asList("10", "03"));
+        String wid2 = AegisData.warningEventId("100000", "2026-11-17T11:00:00+09:00", java.util.Arrays.asList("03", "10"));
+        check(wid1.equals(wid2) && wid1.startsWith("warn:100000:"), "warningEventId order-independent");
+        check(!wid1.equals(AegisData.warningEventId("100000", "2026-11-17T12:00:00+09:00", java.util.Arrays.asList("03", "10"))),
+                "warningEventId differs by report time");
+
+        // ISO8601 パース (気象庁 reportDatetime 形式)
+        java.util.Calendar jst = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Tokyo"));
+        jst.set(2026, java.util.Calendar.NOVEMBER, 17, 11, 0, 0);
+        jst.set(java.util.Calendar.MILLISECOND, 0);
+        check(AegisData.parseIsoMillis("2026-11-17T11:00:00+09:00") == jst.getTimeInMillis(), "parseIsoMillis reportDatetime");
+        check(AegisData.parseIsoMillis("not-a-date") == 0 && AegisData.parseIsoMillis(null) == 0, "parseIsoMillis invalid -> 0");
+
+        // 朝夕ブリーフィングの次回時刻 (JST)
+        java.util.TimeZone tz = java.util.TimeZone.getTimeZone("Asia/Tokyo");
+        java.util.Calendar c = java.util.Calendar.getInstance(tz);
+        c.set(2026, java.util.Calendar.NOVEMBER, 17, 6, 0, 0);
+        c.set(java.util.Calendar.MILLISECOND, 0);
+        long before7 = c.getTimeInMillis();
+        c.set(java.util.Calendar.HOUR_OF_DAY, 7);
+        long at7 = c.getTimeInMillis();
+        check(AegisData.nextBriefingMillis(7, 0, before7, tz) == at7, "nextBriefing same day 7:00");
+        c.add(java.util.Calendar.DAY_OF_MONTH, 1);
+        long nextDay7 = c.getTimeInMillis();
+        check(AegisData.nextBriefingMillis(7, 0, at7, tz) == nextDay7, "nextBriefing at exactly 7:00 -> next day");
+        c.set(2026, java.util.Calendar.NOVEMBER, 17, 21, 30, 0);
+        c.set(java.util.Calendar.MILLISECOND, 0);
+        check(AegisData.nextBriefingMillis(7, 0, c.getTimeInMillis(), tz) == nextDay7, "nextBriefing 21:30 -> next day 7:00");
+        c.set(2026, java.util.Calendar.NOVEMBER, 17, 20, 0, 0);
+        c.set(java.util.Calendar.MILLISECOND, 0);
+        long sameDay21 = AegisData.nextBriefingMillis(21, 0, c.getTimeInMillis(), tz);
+        java.util.Calendar expect21 = java.util.Calendar.getInstance(tz);
+        expect21.set(2026, java.util.Calendar.NOVEMBER, 17, 21, 0, 0);
+        expect21.set(java.util.Calendar.MILLISECOND, 0);
+        check(sameDay21 == expect21.getTimeInMillis(), "nextBriefing same day 21:00");
+
+        // 同期間隔
+        check(AegisData.syncIntervalMillis(15) == 900_000L, "syncIntervalMillis 15min");
+        check(AegisData.syncIntervalMillis(30) == 1_800_000L, "syncIntervalMillis 30min");
+        check(AegisData.syncIntervalMillis(60) == 3_600_000L, "syncIntervalMillis 60min");
+
+        // ----- 予報絵文字 (降水確率・夜間を考慮) -----
+        // 実機スクリーンショットの不整合: 晴れコード + 降水86% (11/18 3時) → 雨系になること
+        check("🌦".equals(AegisData.forecastEmoji(0, 86, 3)), "forecastEmoji clear+pop86 -> rain (shower)");
+        check("🌦".equals(AegisData.forecastEmoji(2, 55, 15)), "forecastEmoji partly cloudy+pop55 -> shower");
+        check("☔".equals(AegisData.forecastEmoji(3, 60, 12)), "forecastEmoji cloudy+pop60 -> umbrella");
+        check("🌧".equals(AegisData.forecastEmoji(3, 90, 12)), "forecastEmoji cloudy+pop90 -> rain");
+        // 夜間の晴れは月 (雨系が優先される場合を除く)
+        check("🌙".equals(AegisData.forecastEmoji(0, 10, 3)), "forecastEmoji night clear -> moon");
+        check("🌙".equals(AegisData.forecastEmoji(1, 0, 22)), "forecastEmoji 22h clear -> moon");
+        check("☀".equals(AegisData.forecastEmoji(0, 10, 12)), "forecastEmoji day clear -> sun");
+        check("☁".equals(AegisData.forecastEmoji(3, 10, 23)), "forecastEmoji night cloudy stays cloudy");
+        // 境界・既存コードはそのまま
+        check("☀".equals(AegisData.forecastEmoji(0, 49, 12)), "forecastEmoji pop49 no override");
+        check("☀".equals(AegisData.forecastEmoji(0, -1, 12)), "forecastEmoji unknown pop no override");
+        check("🌧".equals(AegisData.forecastEmoji(61, 90, 12)), "forecastEmoji rain code unchanged");
+        check("🌨".equals(AegisData.forecastEmoji(71, 90, 12)), "forecastEmoji snow code unchanged");
+        check("⛈".equals(AegisData.forecastEmoji(95, 20, 12)), "forecastEmoji thunder unchanged");
+
         System.out.println("ALL TESTS PASSED (" + passed + ")");
     }
 }

@@ -19,6 +19,7 @@ import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.RadioGroup;
+import android.widget.Switch;
 import android.widget.TextView;
 
 import java.text.SimpleDateFormat;
@@ -43,6 +44,10 @@ public class MainActivity extends Activity {
     private EditText serverUrlInput;
     private EditText locNameInput, locLatInput, locLonInput, locPrefInput, locAreaInput;
     private LinearLayout customLocList;
+    // バックグラウンド同期・通知の設定コントロール
+    private Switch bgSyncSwitch, briefingNotifySwitch;
+    private RadioGroup syncIntervalGroup, quakeThresholdGroup, warnModeGroup;
+    private TextView bgSyncStatus, notifyPermStatus;
     private String currentTab = "briefing";
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -165,7 +170,23 @@ public class MainActivity extends Activity {
             showTab("briefing");
         });
 
-        showTab("briefing");
+        initNotificationSettings();
+        AegisSync.ensureChannels(this);
+        AegisSync.scheduleNextSync(this);
+        AegisSync.scheduleBriefings(this);
+
+        // 通知タップで開かれた場合は該当タブを初期表示にする
+        String initialTab = getIntent() == null ? null : getIntent().getStringExtra(AegisSync.EXTRA_TAB);
+        showTab("quakes".equals(initialTab) ? "quakes" : "briefing");
+    }
+
+    @Override
+    protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String tab = intent == null ? null : intent.getStringExtra(AegisSync.EXTRA_TAB);
+        if ("quakes".equals(tab)) showTab("quakes");
+        else if ("briefing".equals(tab)) showTab("briefing");
     }
 
     private void showTab(String tab) {
@@ -173,6 +194,7 @@ public class MainActivity extends Activity {
         mainHandler.removeCallbacks(monitorTick);
         if ("settings".equals(tab)) {
             stopEewTicker();
+            refreshSyncStatus();
             settingsPanel.setVisibility(View.VISIBLE);
             List<AegisData.Section> sections = new ArrayList<>();
             sections.add(new AegisData.Section("⚙ 設定について",
@@ -182,7 +204,8 @@ public class MainActivity extends Activity {
                             + "・同じWi-FiのPC: http://192.168.1.10:8765\n"
                             + "・AndroidエミュレータからPC: http://10.0.2.2:8765\n\n"
                             + "レーダー・ニュースは直接取得の機能です（サーバーモードでも使えます）。\n"
-                            + "表示中は5分ごとに自動更新されます（地震タブは30秒ごと）。",
+                            + "表示中は5分ごとに自動更新されます（地震タブは30秒ごと）。\n"
+                            + "バックグラウンド同期が ON の間は、アプリを閉じていても定期的に新しい地震・警報を確認して通知します。",
                     "info"));
             render(sections, new ArrayList<>());
             status.setText("設定");
@@ -841,6 +864,12 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_NOTIFY) {
+            refreshSyncStatus();
+            status.setText(AegisSync.notificationsAllowed(this)
+                    ? "通知が許可されました" : "通知は許可されませんでした（端末の設定から許可できます）");
+            return;
+        }
         if (requestCode != REQ_LOCATION) return;
         boolean granted = false;
         for (int g : grantResults) if (g == PackageManager.PERMISSION_GRANTED) granted = true;
@@ -1042,6 +1071,102 @@ public class MainActivity extends Activity {
             String result = msg;
             mainHandler.post(() -> status.setText(result));
         });
+    }
+
+    // ----- バックグラウンド同期・通知の設定 -----
+    private static final int REQ_NOTIFY = 1002;
+
+    private void initNotificationSettings() {
+        bgSyncSwitch = findViewById(R.id.bgSyncSwitch);
+        briefingNotifySwitch = findViewById(R.id.briefingNotifySwitch);
+        syncIntervalGroup = findViewById(R.id.syncIntervalGroup);
+        quakeThresholdGroup = findViewById(R.id.quakeThresholdGroup);
+        warnModeGroup = findViewById(R.id.warnModeGroup);
+        bgSyncStatus = findViewById(R.id.bgSyncStatus);
+        notifyPermStatus = findViewById(R.id.notifyPermStatus);
+        Button notifyPermButton = findViewById(R.id.notifyPermButton);
+        Button notifyTest = findViewById(R.id.notifyTest);
+
+        // 現在の設定を反映してからリスナーを付ける (初期反映でリスナーが発火しないように)
+        bgSyncSwitch.setChecked(AegisSync.isBgSyncEnabled(this));
+        briefingNotifySwitch.setChecked(AegisSync.isBriefingEnabled(this));
+        int minutes = AegisSync.intervalMinutes(this);
+        syncIntervalGroup.check(minutes == 15 ? R.id.interval15 : minutes == 60 ? R.id.interval60 : R.id.interval30);
+        int thr = AegisSync.quakeThresholdScale(this);
+        quakeThresholdGroup.check(thr == 10 ? R.id.thrScale10 : thr == 20 ? R.id.thrScale20
+                : thr == 40 ? R.id.thrScale40 : thr == 45 ? R.id.thrScale45 : R.id.thrScale30);
+        warnModeGroup.check(AegisSync.warnMode(this) == AegisData.WARN_MODE_INCLUDE_ADVISORY
+                ? R.id.warnIncludeAdvisory : R.id.warnAlertsOnly);
+
+        bgSyncSwitch.setOnCheckedChangeListener((btn, checked) -> {
+            AegisSync.setBgSyncEnabled(this, checked);
+            AegisSync.scheduleNextSync(this);
+            refreshSyncStatus();
+            status.setText(checked ? "バックグラウンド同期を ON にしました" : "バックグラウンド同期を OFF にしました");
+        });
+        briefingNotifySwitch.setOnCheckedChangeListener((btn, checked) -> {
+            AegisSync.setBriefingEnabled(this, checked);
+            AegisSync.scheduleBriefings(this);
+            status.setText(checked ? "朝夕ブリーフィング通知を ON にしました（7:00 / 21:00）"
+                    : "朝夕ブリーフィング通知を OFF にしました");
+        });
+        syncIntervalGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            int m = checkedId == R.id.interval15 ? 15 : checkedId == R.id.interval60 ? 60 : 30;
+            AegisSync.setIntervalMinutes(this, m);
+            AegisSync.scheduleNextSync(this);
+            refreshSyncStatus();
+        });
+        quakeThresholdGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            int s = checkedId == R.id.thrScale10 ? 10 : checkedId == R.id.thrScale20 ? 20
+                    : checkedId == R.id.thrScale40 ? 40 : checkedId == R.id.thrScale45 ? 45 : 30;
+            AegisSync.setQuakeThresholdScale(this, s);
+            status.setText("地震の通知しきい値を震度" + AegisData.scaleToStr(s) + "以上にしました");
+        });
+        warnModeGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            AegisSync.setWarnMode(this, checkedId == R.id.warnIncludeAdvisory
+                    ? AegisData.WARN_MODE_INCLUDE_ADVISORY : AegisData.WARN_MODE_ALERTS_ONLY);
+            status.setText("警報の通知範囲を保存しました");
+        });
+        notifyPermButton.setOnClickListener(v -> {
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFY);
+            } else {
+                status.setText("この端末（Android 12以下）では通知の許可リクエストは不要です");
+                refreshSyncStatus();
+            }
+        });
+        notifyTest.setOnClickListener(v -> {
+            if (AegisSync.postTestNotification(this)) {
+                status.setText("テスト通知を出しました（通知欄を確認してください）");
+            } else {
+                status.setText("通知が許可されていないため、テスト通知を出せませんでした");
+                refreshSyncStatus();
+            }
+        });
+        refreshSyncStatus();
+    }
+
+    // 設定画面の同期・許可状態表示を最新にする
+    private void refreshSyncStatus() {
+        if (bgSyncStatus == null) return;
+        StringBuilder sb = new StringBuilder("バックグラウンド同期: ");
+        if (AegisSync.isBgSyncEnabled(this)) {
+            sb.append("ON（").append(AegisSync.intervalMinutes(this)).append("分間隔）");
+        } else {
+            sb.append("OFF");
+        }
+        long last = AegisSync.lastSyncMillis(this);
+        if (last > 0) {
+            sb.append(" / 最終同期 ").append(new SimpleDateFormat("M/d HH:mm", Locale.JAPAN).format(new Date(last)));
+        } else {
+            sb.append(" / 最終同期 まだありません");
+        }
+        bgSyncStatus.setText(sb.toString());
+        if (notifyPermStatus != null) {
+            notifyPermStatus.setText(AegisSync.notificationsAllowed(this)
+                    ? "通知の許可: 許可済み"
+                    : "通知の許可: 未許可（下のボタン、または端末の設定で許可してください）");
+        }
     }
 
     @Override
