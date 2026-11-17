@@ -39,13 +39,22 @@ https://github.com/i-mabu/aegis-android （Private）
 ## ビルド方法
 
 ### 方法A: オフライン手動ビルド（検証済み）
-Gradle/AGPを使わず、Android SDK のツールだけでAPKを作ります。
+Gradle/AGPを使わず、Android SDK のツールだけでAPKを作ります。ワンコマンドで単体テスト → ビルド → 署名まで実行し、最後に成果物のパス・サイズ・sha256 を表示します。
 ```bash
 # 必要: JDK 17+ と Android SDK (platforms;android-34 / build-tools;34.0.0)
-ANDROID_SDK_ROOT=/path/to/android-sdk ./build-apk.sh
+./build-apk.sh
 # -> dist/aegis-client.apk (デバッグ署名)
 ```
-手順は aapt2 compile/link → kotlinc（aapt2 生成の R.java のみ javac）→ d8（kotlin-stdlib.jar を同梱）→ zipalign → apksigner です。Kotlin コンパイラは `KOTLINC` 環境変数 → `~/workspace/tools/kotlin` → PATH の順に探します。
+リリース署名でビルドする場合（キーストア情報は環境変数でのみ渡し、スクリプトやリポジトリには書きません）:
+```bash
+RELEASE_KEYSTORE=/path/to/release.keystore \
+RELEASE_KEYSTORE_PASS=... \
+RELEASE_KEY_ALIAS=... \
+./build-apk.sh release
+# -> dist/aegis-client-release.apk
+```
+手順は 単体テスト（tests/run-tests.sh、111件）→ aapt2 compile/link → kotlinc（aapt2 生成の R.java のみ javac）→ d8（kotlin-stdlib.jar を同梱）→ zipalign → apksigner です。Kotlin コンパイラは `KOTLINC` 環境変数 → `~/workspace/tools/kotlin` → PATH の順に探します。SDK の場所は `ANDROID_SDK_ROOT` / `ANDROID_HOME` で上書きできます。
+ビルドは bash スクリプトです（build.bat はありません）。Windows では WSL 上で実行してください。
 
 ### 方法B: Gradle / Android Studio
 Android Studio でこのフォルダを開くか、コマンドラインで:
