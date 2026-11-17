@@ -19,7 +19,7 @@ public final class AegisData {
         public final String name;
         public final double lat, lon;
         public final String prefCode, areaName;
-        Location(String name, double lat, double lon, String prefCode, String areaName) {
+        public Location(String name, double lat, double lon, String prefCode, String areaName) {
             this.name = name; this.lat = lat; this.lon = lon; this.prefCode = prefCode; this.areaName = areaName;
         }
     }
@@ -27,6 +27,15 @@ public final class AegisData {
     public static final Location TAKASAKI = new Location("高崎", 36.3219, 139.0023, "100000", "南部");
     public static final Location OMIYA = new Location("大宮", 35.9064, 139.6239, "110000", "南部");
     public static final Location[] LOCATIONS = {TAKASAKI, OMIYA};
+
+    // ユーザーが追加した任意地点 (設定画面から MainActivity が読み込んで設定する)
+    public static volatile java.util.List<Location> customLocations = new java.util.ArrayList<>();
+
+    public static Location[] effectiveLocations() {
+        java.util.List<Location> all = new java.util.ArrayList<>(java.util.Arrays.asList(LOCATIONS));
+        all.addAll(customLocations);
+        return all.toArray(new Location[0]);
+    }
 
     // 並列取得用の共有プール (天気の3要素や複数地点を同時に取る)
     static final java.util.concurrent.ExecutorService FETCH_POOL = java.util.concurrent.Executors.newCachedThreadPool();
@@ -91,8 +100,13 @@ public final class AegisData {
     public static final class Quake {
         public final String place, detail, sev;
         public final int maxScale;
+        public final double lat, lon; // 震源座標 (0,0 は不明)
         public Quake(String place, String detail, String sev, int maxScale) {
+            this(place, detail, sev, maxScale, 0, 0);
+        }
+        public Quake(String place, String detail, String sev, int maxScale, double lat, double lon) {
             this.place = place; this.detail = detail; this.sev = sev; this.maxScale = maxScale;
+            this.lat = lat; this.lon = lon;
         }
     }
 
@@ -147,9 +161,48 @@ public final class AegisData {
             String shortTime = time;
             if (time.length() >= 16) shortTime = time.substring(5, 10) + " " + time.substring(11, 16);
             String detail = shortTime + "発生 / M" + mag + " / 深さ約" + hypo.optString("depth", "?") + "km";
+            // 津波の見通しを日本語で明示
             String tsunami = eq.optString("domesticTsunami", "None");
-            if (!"None".equals(tsunami) && !"Unknown".equals(tsunami)) detail += " / 津波の情報あり";
-            out.add(new Quake(hypo.optString("name", "不明"), detail, severityOf(maxScale, mag), maxScale));
+            switch (tsunami) {
+                case "Forecast": detail += " / 若干の海面変動の可能性あり"; break;
+                case "Advisory": detail += " / 津波注意報レベル"; break;
+                case "Warning": detail += " / 津波警報レベル"; break;
+                case "Unknown": detail += " / 津波の有無は確認中"; break;
+                default: detail += " / 津波の心配なし";
+            }
+            // 最大震度を観測した地点と、地元（群馬・埼玉）の震度を points から拾う
+            JSONArray points = item.optJSONArray("points");
+            if (points != null) {
+                String topAddr = "";
+                int topCount = 0;
+                java.util.Map<String, Integer> localMax = new java.util.LinkedHashMap<>();
+                for (int j = 0; j < points.length(); j++) {
+                    JSONObject p = points.getJSONObject(j);
+                    int sc = p.optInt("scale", 0);
+                    if (sc == maxScale) {
+                        topCount++;
+                        if (topAddr.isEmpty()) topAddr = p.optString("addr", p.optString("pref", ""));
+                    }
+                    String pref = p.optString("pref", "");
+                    if (pref.equals("群馬県") || pref.equals("埼玉県")) {
+                        Integer cur = localMax.get(pref);
+                        if (cur == null || sc > cur) localMax.put(pref, sc);
+                    }
+                }
+                if (!topAddr.isEmpty()) {
+                    detail += " / 最大震度観測: " + topAddr + (topCount > 1 ? " ほか" + (topCount - 1) + "地点" : "");
+                }
+                if (!localMax.isEmpty()) {
+                    StringBuilder lsb = new StringBuilder(" / 地元震度:");
+                    for (java.util.Map.Entry<String, Integer> e : localMax.entrySet()) {
+                        lsb.append(" ").append(e.getKey()).append(" 最大").append(scaleToStr(e.getValue()));
+                    }
+                    detail += lsb.toString();
+                }
+            }
+            double lat = hypo.optDouble("latitude", 0);
+            double lon = hypo.optDouble("longitude", 0);
+            out.add(new Quake(hypo.optString("name", "不明"), detail, severityOf(maxScale, mag), maxScale, lat, lon));
         }
         return out;
     }
@@ -335,32 +388,42 @@ public final class AegisData {
         return sb.toString();
     }
 
-    // カードUI用: 地点ごとの天気は2地点を並列取得して待ち時間を短縮する
+    // カードUI用: 天気・津波・地震をすべて並列取得し、表示順に組み立てる
     public static java.util.List<Section> briefingSections() {
         java.util.List<Section> out = new java.util.ArrayList<>();
+        Location[] locs = effectiveLocations();
+        java.util.concurrent.Future<String> tsunamiF = FETCH_POOL.submit(() -> tsunamiText());
+        java.util.concurrent.Future<java.util.List<Quake>> quakesF = FETCH_POOL.submit(() -> quakeItems(3));
+        java.util.List<Section> weatherSections = new java.util.ArrayList<>();
         {
             java.util.List<java.util.concurrent.Future<String>> futures = new java.util.ArrayList<>();
-            for (Location loc : LOCATIONS) {
+            for (Location loc : locs) {
                 final Location l = loc;
                 futures.add(FETCH_POOL.submit(() -> weatherText(l)));
             }
-            for (int i = 0; i < LOCATIONS.length; i++) {
+            for (int i = 0; i < locs.length; i++) {
                 String body;
                 try { body = futures.get(i).get(); }
                 catch (Exception e) { body = "（天気を取得できませんでした）"; }
                 String level = body.contains("発表中") ? "warn" : "info";
-                out.add(new Section("☀ 天気予報（" + LOCATIONS[i].name + "）", body.trim(), level));
+                weatherSections.add(new Section("☀ 天気予報（" + locs[i].name + "）", body.trim(), level));
             }
         }
+        boolean tsunamiAlert = false;
+        Section tsunamiSection;
         try {
-            String t = tsunamiText();
-            boolean alert = t.contains("大津波警報") || t.contains("津波警報:") || t.contains("津波注意報");
-            out.add(new Section("🌊 津波情報", stripFirstLine(t), alert ? "danger" : "ok"));
+            String t = tsunamiF.get();
+            tsunamiAlert = t.contains("大津波警報") || t.contains("津波警報:") || t.contains("津波注意報");
+            tsunamiSection = new Section("🌊 津波情報", stripFirstLine(t), tsunamiAlert ? "danger" : "ok");
         } catch (Exception e) {
-            out.add(new Section("🌊 津波情報", "取得できませんでした：" + friendlyError(e), "warn"));
+            tsunamiSection = new Section("🌊 津波情報", "取得できませんでした：" + friendlyError(e), "warn");
         }
+        out.addAll(weatherSections);
+        out.add(tsunamiSection);
+        java.util.List<Quake> qsForSummary = new java.util.ArrayList<>();
         try {
-            java.util.List<Quake> qs = quakeItems(3);
+            java.util.List<Quake> qs = quakesF.get();
+            qsForSummary = qs;
             if (qs.isEmpty()) {
                 out.add(new Section("🌏 最新の地震", "最近の地震情報はありません。", "ok"));
             } else {
@@ -374,7 +437,36 @@ public final class AegisData {
         } catch (Exception e) {
             out.add(new Section("🌏 最新の地震", "取得できませんでした：" + friendlyError(e), "warn"));
         }
+        out.add(0, summarize(weatherSections, tsunamiAlert, qsForSummary));
         return out;
+    }
+
+    // 一括で把握するための先頭まとめカード (警報・津波・最新地震・今日の天気を凝縮)
+    public static Section summarize(java.util.List<Section> weatherSections, boolean tsunamiAlert, java.util.List<Quake> quakes) {
+        StringBuilder sb = new StringBuilder();
+        java.util.LinkedHashSet<String> warnNames = new java.util.LinkedHashSet<>();
+        for (Section s : weatherSections) {
+            for (String line : s.body.split("\n")) {
+                if (line.startsWith("⚠ 発表中：")) warnNames.add(line.substring("⚠ 発表中：".length()).trim());
+            }
+        }
+        sb.append(warnNames.isEmpty() ? "⚠ 警報・注意報: 発表なし" : "⚠ 発表中: " + String.join("、", warnNames));
+        sb.append("\n🌊 津波: ").append(tsunamiAlert ? "警報・注意報あり" : "なし");
+        if (!quakes.isEmpty()) {
+            Quake q = quakes.get(0);
+            sb.append("\n🌏 最新の地震: 震度").append(scaleToStr(q.maxScale)).append(" ").append(q.place);
+        }
+        for (Section s : weatherSections) {
+            for (String line : s.body.split("\n")) {
+                if (line.startsWith("今日：")) {
+                    String locName = s.title.replace("☀ 天気予報（", "").replace("）", "");
+                    sb.append("\n☀ ").append(locName).append(": ").append(line.substring("今日：".length()).trim());
+                    break;
+                }
+            }
+        }
+        String level = tsunamiAlert ? "danger" : (!warnNames.isEmpty() ? "warn" : "ok");
+        return new Section("📌 現在のまとめ", sb.toString(), level);
     }
 
     private static String stripFirstLine(String s) {

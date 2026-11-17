@@ -97,6 +97,93 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="設定を保存" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="14dp"
+            android:text="📍 監視地点の追加（任意地点）"
+            android:textColor="#FFFFFF"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="都道府県コード例: 群馬県 100000 / 埼玉県 110000 / 東京都 130000（気象庁の都道府県コード）。地域名は気象庁の一次細分区域名（例: 南部）。緯度経度は地図アプリ等で調べられます。"
+            android:textColor="#8A94A6"
+            android:textSize="11sp" />
+
+        <EditText
+            android:id="@+id/locName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="地点名（例: 実家）"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#8A94A6" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/locLat"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="緯度（例: 36.32）"
+                android:inputType="numberDecimal|numberSigned"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#8A94A6" />
+
+            <EditText
+                android:id="@+id/locLon"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="経度（例: 139.00）"
+                android:inputType="numberDecimal|numberSigned"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#8A94A6" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/locPref"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="都道府県コード"
+                android:inputType="number"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#8A94A6" />
+
+            <EditText
+                android:id="@+id/locArea"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="地域名（例: 南部）"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#8A94A6" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/addLocation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="地点を追加" />
+
+        <LinearLayout
+            android:id="@+id/customLocList"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
     </LinearLayout>
 
     <TextView

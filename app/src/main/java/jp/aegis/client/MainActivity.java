@@ -29,12 +29,15 @@ public class MainActivity extends Activity {
     private static final String PREFS = "aegis_prefs";
     private static final String KEY_MODE = "mode"; // direct | server
     private static final String KEY_SERVER = "server_url";
+    private static final String KEY_CUSTOMS = "custom_locations";
 
     private LinearLayout container;
     private TextView status;
     private View settingsPanel;
     private RadioGroup modeGroup;
     private EditText serverUrlInput;
+    private EditText locNameInput, locLatInput, locLonInput, locPrefInput, locAreaInput;
+    private LinearLayout customLocList;
     private String currentTab = "briefing";
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -65,6 +68,16 @@ public class MainActivity extends Activity {
         String mode = prefs.getString(KEY_MODE, "direct");
         modeGroup.check("server".equals(mode) ? R.id.modeServer : R.id.modeDirect);
         serverUrlInput.setText(prefs.getString(KEY_SERVER, "http://10.0.2.2:8765"));
+
+        locNameInput = findViewById(R.id.locName);
+        locLatInput = findViewById(R.id.locLat);
+        locLonInput = findViewById(R.id.locLon);
+        locPrefInput = findViewById(R.id.locPref);
+        locAreaInput = findViewById(R.id.locArea);
+        customLocList = findViewById(R.id.customLocList);
+        loadCustomLocations();
+        Button addLocation = findViewById(R.id.addLocation);
+        addLocation.setOnClickListener(v -> addCustomLocation());
 
         Button tabBriefing = findViewById(R.id.tabBriefing);
         Button tabQuakes = findViewById(R.id.tabQuakes);
@@ -112,6 +125,93 @@ public class MainActivity extends Activity {
         loadCurrent();
     }
 
+    // ----- 任意地点 (カスタム監視地点) -----
+    private void loadCustomLocations() {
+        List<AegisData.Location> list = new ArrayList<>();
+        try {
+            String json = getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_CUSTOMS, "[]");
+            org.json.JSONArray arr = new org.json.JSONArray(json);
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject o = arr.getJSONObject(i);
+                list.add(new AegisData.Location(o.optString("n"), o.optDouble("la", 0), o.optDouble("lo", 0), o.optString("p"), o.optString("a")));
+            }
+        } catch (Exception ignored) {}
+        AegisData.customLocations = list;
+        renderCustomList();
+    }
+
+    private void saveCustomLocations() {
+        try {
+            org.json.JSONArray arr = new org.json.JSONArray();
+            for (AegisData.Location l : AegisData.customLocations) {
+                arr.put(new org.json.JSONObject().put("n", l.name).put("la", l.lat).put("lo", l.lon).put("p", l.prefCode).put("a", l.areaName));
+            }
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_CUSTOMS, arr.toString()).apply();
+        } catch (Exception ignored) {}
+    }
+
+    private void renderCustomList() {
+        if (customLocList == null) return;
+        customLocList.removeAllViews();
+        List<AegisData.Location> list = AegisData.customLocations;
+        if (list.isEmpty()) {
+            TextView none = new TextView(this);
+            none.setText("追加された地点はありません（高崎・大宮は標準で監視しています）");
+            none.setTextColor(Color.parseColor("#8A94A6"));
+            none.setTextSize(12);
+            customLocList.addView(none);
+            return;
+        }
+        for (int i = 0; i < list.size(); i++) {
+            final int idx = i;
+            AegisData.Location l = list.get(i);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            TextView label = new TextView(this);
+            label.setText("📍 " + l.name + "（" + l.lat + ", " + l.lon + "）");
+            label.setTextColor(Color.WHITE);
+            label.setTextSize(13);
+            label.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            Button del = new Button(this);
+            del.setText("削除");
+            del.setOnClickListener(v -> {
+                AegisData.customLocations.remove(idx);
+                saveCustomLocations();
+                renderCustomList();
+                status.setText("地点を削除しました");
+            });
+            row.addView(label);
+            row.addView(del);
+            customLocList.addView(row);
+        }
+    }
+
+    private void addCustomLocation() {
+        String name = locNameInput.getText().toString().trim();
+        String pref = locPrefInput.getText().toString().trim();
+        String area = locAreaInput.getText().toString().trim();
+        double lat, lon;
+        try {
+            lat = Double.parseDouble(locLatInput.getText().toString().trim());
+            lon = Double.parseDouble(locLonInput.getText().toString().trim());
+        } catch (Exception e) {
+            status.setText("緯度・経度は数値で入力してください");
+            return;
+        }
+        if (name.isEmpty() || pref.isEmpty() || area.isEmpty()) {
+            status.setText("地点名・都道府県コード・地域名をすべて入力してください");
+            return;
+        }
+        List<AegisData.Location> list = new ArrayList<>(AegisData.customLocations);
+        list.add(new AegisData.Location(name, lat, lon, pref, area));
+        AegisData.customLocations = list;
+        saveCustomLocations();
+        renderCustomList();
+        locNameInput.setText("");
+        status.setText("地点「" + name + "」を追加しました。ブリーフィングに反映されます");
+    }
+
     private String cacheKey(String tab, String mode, String server) {
         return "cache_" + tab + "_" + mode + "_" + (server == null ? "" : server.hashCode());
     }
@@ -136,7 +236,7 @@ public class MainActivity extends Activity {
             if (qa != null) {
                 for (int i = 0; i < qa.length(); i++) {
                     org.json.JSONObject o = qa.getJSONObject(i);
-                    quakes.add(new AegisData.Quake(o.optString("p"), o.optString("d"), o.optString("s"), o.optInt("m")));
+                    quakes.add(new AegisData.Quake(o.optString("p"), o.optString("d"), o.optString("s"), o.optInt("m"), o.optDouble("la", 0), o.optDouble("lo", 0)));
                 }
             }
             if (sections.isEmpty() && quakes.isEmpty()) return false;
@@ -159,7 +259,7 @@ public class MainActivity extends Activity {
             }
             org.json.JSONArray qa = new org.json.JSONArray();
             for (AegisData.Quake q : quakes) {
-                qa.put(new org.json.JSONObject().put("p", q.place).put("d", q.detail).put("s", q.sev).put("m", q.maxScale));
+                qa.put(new org.json.JSONObject().put("p", q.place).put("d", q.detail).put("s", q.sev).put("m", q.maxScale).put("la", q.lat).put("lo", q.lon));
             }
             org.json.JSONObject root = new org.json.JSONObject().put("sections", sa).put("quakes", qa);
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(key, root.toString()).apply();
@@ -316,8 +416,30 @@ public class MainActivity extends Activity {
         detail.setPadding(0, dp(2), 0, 0);
         texts.addView(place);
         texts.addView(detail);
+        texts.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         card.addView(texts);
+        if (q.lat != 0 || q.lon != 0) {
+            Button mapBtn = new Button(this);
+            mapBtn.setText("🗺 地図");
+            mapBtn.setTextSize(12);
+            mapBtn.setOnClickListener(v -> openQuakeMap(q));
+            card.addView(mapBtn);
+        }
         return card;
+    }
+
+    // 震源を地図アプリで開く (なければブラウザで OpenStreetMap)
+    private void openQuakeMap(AegisData.Quake q) {
+        String label = "震源: " + q.place;
+        android.net.Uri geo = android.net.Uri.parse("geo:" + q.lat + "," + q.lon + "?q=" + q.lat + "," + q.lon + "(" + android.net.Uri.encode(label) + ")");
+        android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW, geo);
+        try {
+            startActivity(intent);
+        } catch (Exception e) {
+            android.net.Uri web = android.net.Uri.parse("https://www.openstreetmap.org/?mlat=" + q.lat + "&mlon=" + q.lon + "#map=8/" + q.lat + "/" + q.lon);
+            try { startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, web)); }
+            catch (Exception ignored) { status.setText("地図を開けませんでした"); }
+        }
     }
 
     private int scaleColor(int scale) {
