@@ -26,27 +26,59 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="ブリーフィング" />
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:text="ブリーフィング"
+            android:textSize="11sp" />
 
         <Button
             android:id="@+id/tabQuakes"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="地震情報" />
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:text="地震"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/tabRadar"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:text="レーダー"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/tabNews"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:text="ニュース"
+            android:textSize="11sp" />
 
         <Button
             android:id="@+id/tabSettings"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="設定" />
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:text="設定"
+            android:textSize="11sp" />
 
         <Button
             android:id="@+id/refreshButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="↻ 更新" />
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:text="↻"
+            android:textSize="13sp" />
     </LinearLayout>
 
 
@@ -120,6 +152,25 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="設定を保存" />
+
+        <Button
+            android:id="@+id/diagTest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="🩺 接続テスト（自己診断）" />
+
+        <Button
+            android:id="@+id/demoTest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="🧪 テスト表示（デモ）" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="接続テストは各データソースへの到達を確認します。テスト表示はサンプルの警報・緊急地震速報（カウントダウン付き）を表示するデモで、実際のデータに切り替わると自動で終了します。"
+            android:textColor="#8A94A6"
+            android:textSize="11sp" />
 
         <TextView
             android:layout_width="match_parent"
@@ -201,6 +252,19 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="地点を追加" />
+
+        <Button
+            android:id="@+id/gpsButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="📍 現在地（GPS）を取得して地点登録" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="GPSで取得した位置から都道府県を推定し、地域区分を選んで「現在地」として登録します。"
+            android:textColor="#8A94A6"
+            android:textSize="11sp" />
 
         <LinearLayout
             android:id="@+id/customLocList"

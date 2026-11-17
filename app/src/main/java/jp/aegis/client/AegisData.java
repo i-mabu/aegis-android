@@ -49,7 +49,7 @@ public final class AegisData {
             try {
                 conn.setConnectTimeout(10000);
                 conn.setReadTimeout(20000);
-                conn.setRequestProperty("User-Agent", "AEGIS-Android/1.4");
+                conn.setRequestProperty("User-Agent", "AEGIS-Android/1.5");
                 conn.setRequestProperty("Accept", "application/json");
                 conn.setRequestProperty("Accept-Encoding", "gzip");
                 int code = conn.getResponseCode();
@@ -101,12 +101,16 @@ public final class AegisData {
         public final String place, detail, sev;
         public final int maxScale;
         public final double lat, lon; // 震源座標 (0,0 は不明)
+        public final long originMillis; // 発生時刻 (epoch ミリ秒, 0 は不明)
         public Quake(String place, String detail, String sev, int maxScale) {
-            this(place, detail, sev, maxScale, 0, 0);
+            this(place, detail, sev, maxScale, 0, 0, 0);
         }
         public Quake(String place, String detail, String sev, int maxScale, double lat, double lon) {
+            this(place, detail, sev, maxScale, lat, lon, 0);
+        }
+        public Quake(String place, String detail, String sev, int maxScale, double lat, double lon, long originMillis) {
             this.place = place; this.detail = detail; this.sev = sev; this.maxScale = maxScale;
-            this.lat = lat; this.lon = lon;
+            this.lat = lat; this.lon = lon; this.originMillis = originMillis;
         }
     }
 
@@ -207,7 +211,7 @@ public final class AegisData {
             }
             double lat = hypo.optDouble("latitude", 0);
             double lon = hypo.optDouble("longitude", 0);
-            out.add(new Quake(hypo.optString("name", "不明"), detail, severityOf(maxScale, mag), maxScale, lat, lon));
+            out.add(new Quake(hypo.optString("name", "不明"), detail, severityOf(maxScale, mag), maxScale, lat, lon, parseP2pTime(time)));
         }
         return out;
     }
@@ -300,6 +304,27 @@ public final class AegisData {
             }
         } catch (Exception ignored) {}
         return null;
+    }
+
+    // P2P の時刻文字列 "2026/11/17 10:40:00" を epoch ミリ秒にする (失敗時 0)
+    public static long parseP2pTime(String time) {
+        if (time == null || time.length() < 19) return 0;
+        try {
+            java.util.Date d = new java.text.SimpleDateFormat("yyyy/MM/dd HH:mm:ss", java.util.Locale.JAPAN).parse(time.substring(0, 19));
+            return d == null ? 0 : d.getTime();
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    // 2点間の球面距離 (km)
+    public static double haversineKm(double lat1, double lon1, double lat2, double lon2) {
+        double r = 6371.0;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return 2 * r * Math.asin(Math.sqrt(a));
     }
 
     // ===== 4. 気象 (気象庁 + Open-Meteo) =====
@@ -408,14 +433,30 @@ public final class AegisData {
         return new String[]{sb.toString(), areaCode};
     }
 
+    // WMO 天気コード → 絵文字 (時間別・週間予報のコンパクト表示用)
+    public static String weatherEmoji(int code) {
+        switch (code) {
+            case 0: case 1: return "☀";
+            case 2: return "⛅";
+            case 3: return "☁";
+            case 45: case 48: return "🌫";
+            case 51: case 53: case 55: case 80: case 81: case 82: return "🌦";
+            case 61: case 63: case 65: case 66: case 67: return "🌧";
+            case 56: case 57: case 71: case 73: case 75: case 77: case 85: case 86: return "🌨";
+            case 95: case 96: case 99: return "⛈";
+            default: return "・";
+        }
+    }
+
     private static String currentPart(Location loc) {
         StringBuilder sb = new StringBuilder();
-        // Open-Meteo 現在
+        // Open-Meteo: 現在・時間別・日別(7日) を1リクエストで統合取得する
         try {
             String url = "https://api.open-meteo.com/v1/forecast?latitude=" + loc.lat + "&longitude=" + loc.lon
                     + "&current=temperature_2m,weather_code,wind_speed_10m"
+                    + "&hourly=temperature_2m,precipitation_probability,weather_code"
                     + "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
-                    + "&forecast_days=2&timezone=Asia%2FTokyo";
+                    + "&forecast_days=7&timezone=Asia%2FTokyo";
             JSONObject root = new JSONObject(fetch(url));
             JSONObject cur = root.getJSONObject("current");
             JSONObject daily = root.getJSONObject("daily");
@@ -436,10 +477,83 @@ public final class AegisData {
                   .append(daily.getJSONArray("temperature_2m_max").optDouble(1)).append("℃ / 降水確率 最大")
                   .append(pop2 < 0 ? "?" : String.valueOf((long) pop2)).append("%\n");
             }
+            // 時間別 (今日の残り + 明日を3時間刻み)
+            JSONObject hourly = root.optJSONObject("hourly");
+            if (hourly != null) {
+                String h = hourlyText(hourly);
+                if (!h.isEmpty()) sb.append(h);
+            }
+            // 週間予報 (daily 7日を1〜2行に)
+            String w = weeklyText(daily);
+            if (!w.isEmpty()) sb.append(w);
         } catch (Exception e) {
             sb.append("（現在の気象を取得できませんでした：").append(friendlyError(e)).append("）\n");
         }
         return sb.toString();
+    }
+
+    // 時間別予報: 現在時刻以降、今日の残り+明日分を3時間刻みでコンパクトに整形する
+    public static String hourlyText(JSONObject hourly) {
+        try {
+            JSONArray times = hourly.optJSONArray("time");
+            JSONArray temps = hourly.optJSONArray("temperature_2m");
+            JSONArray pops = hourly.optJSONArray("precipitation_probability");
+            JSONArray codes = hourly.optJSONArray("weather_code");
+            if (times == null || temps == null || codes == null) return "";
+            String nowIso = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH", java.util.Locale.JAPAN).format(new java.util.Date());
+            StringBuilder sb = new StringBuilder("時間別： ");
+            String prevDate = "";
+            int shown = 0;
+            for (int i = 0; i < times.length() && shown < 12; i++) {
+                String t = times.optString(i); // 2026-11-17T15:00
+                if (t.length() < 13) continue;
+                if (t.substring(0, 13).compareTo(nowIso) < 0) continue; // 過去の時間帯は出さない
+                int hour = Integer.parseInt(t.substring(11, 13));
+                if (hour % 3 != 0) continue;
+                String date = t.substring(5, 10).replace('-', '/'); // 11/17
+                if (!date.equals(prevDate)) {
+                    if (shown > 0) sb.append("\n　");
+                    sb.append(date).append(" ");
+                    prevDate = date;
+                } else if (shown > 0) {
+                    sb.append(" / ");
+                }
+                sb.append(hour).append("時 ").append(weatherEmoji(codes.optInt(i)))
+                  .append(Math.round(temps.optDouble(i))).append("℃");
+                double p = pops != null ? pops.optDouble(i, -1) : -1;
+                if (p >= 0) sb.append(" 降水").append(Math.round(p)).append("%");
+                shown++;
+            }
+            if (shown == 0) return "";
+            sb.append("\n");
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    // 週間予報: daily (7日) を「週間: 11/18 ☀ 9〜21℃ / …」形式に整形する
+    public static String weeklyText(JSONObject daily) {
+        try {
+            JSONArray times = daily.optJSONArray("time");
+            JSONArray codes = daily.optJSONArray("weather_code");
+            JSONArray maxs = daily.optJSONArray("temperature_2m_max");
+            JSONArray mins = daily.optJSONArray("temperature_2m_min");
+            if (times == null || codes == null || maxs == null || mins == null || times.length() == 0) return "";
+            StringBuilder sb = new StringBuilder("週間： ");
+            for (int i = 0; i < times.length(); i++) {
+                String t = times.optString(i); // 2026-11-18
+                if (t.length() < 10) continue;
+                if (i > 0) sb.append(" / ");
+                sb.append(t.substring(5, 10).replace('-', '/')).append(" ")
+                  .append(weatherEmoji(codes.optInt(i))).append(" ")
+                  .append(Math.round(mins.optDouble(i))).append("〜").append(Math.round(maxs.optDouble(i))).append("℃");
+            }
+            sb.append("\n");
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     // 警報・注意報: 警報JSONの areas は名称を持たず「一次細分区域コード」のみのため、
@@ -524,6 +638,7 @@ public final class AegisData {
         java.util.List<Section> out = new java.util.ArrayList<>();
         Location[] locs = effectiveLocations();
         java.util.concurrent.Future<String> tsunamiF = FETCH_POOL.submit(() -> tsunamiText());
+        java.util.concurrent.Future<String> typhoonF = FETCH_POOL.submit(() -> typhoonText());
         java.util.concurrent.Future<String> eewF = FETCH_POOL.submit(() -> eewText());
         java.util.concurrent.Future<java.util.List<Quake>> quakesF = FETCH_POOL.submit(() -> quakeItems(3));
         java.util.List<Section> weatherSections = new java.util.ArrayList<>();
@@ -552,6 +667,12 @@ public final class AegisData {
         }
         out.addAll(weatherSections);
         out.add(tsunamiSection);
+        try {
+            String ty = typhoonF.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            if (ty != null && !ty.isEmpty()) {
+                out.add(new Section("🌀 台風情報", ty, "warn"));
+            }
+        } catch (Exception ignored) {}
         try {
             String eew = eewF.get(30, java.util.concurrent.TimeUnit.SECONDS);
             if (eew != null) {
@@ -623,6 +744,11 @@ public final class AegisData {
 
     // 地震タブ用: 津波セクション + EEWセクション
     public static java.util.List<Section> quakesSections() {
+        return quakesSections(true);
+    }
+
+    // includeEew=false のときは EEW を含めない (モニターのカウントダウンカードで別表示するため)
+    public static java.util.List<Section> quakesSections(boolean includeEew) {
         java.util.List<Section> out = new java.util.ArrayList<>();
         try {
             String t = tsunamiText();
@@ -631,9 +757,11 @@ public final class AegisData {
         } catch (Exception e) {
             out.add(new Section("🌊 津波情報", "取得できませんでした：" + friendlyError(e), "warn"));
         }
-        String eew = eewText();
-        if (eew != null) {
-            out.add(new Section("🚨 緊急地震速報", eew, eew.contains("取り消し") ? "info" : "danger"));
+        if (includeEew) {
+            String eew = eewText();
+            if (eew != null) {
+                out.add(new Section("🚨 緊急地震速報", eew, eew.contains("取り消し") ? "info" : "danger"));
+            }
         }
         return out;
     }
@@ -683,5 +811,499 @@ public final class AegisData {
             sb.append("-".repeat(48)).append("\n");
         }
         return sb.toString();
+    }
+
+    // ===== 7. 都道府県テーブル (気象庁コード・正式名称・県庁所在地) =====
+    public static final class Pref {
+        public final String code, name;
+        public final double capLat, capLon;
+        public Pref(String code, String name, double capLat, double capLon) {
+            this.code = code; this.name = name; this.capLat = capLat; this.capLon = capLon;
+        }
+    }
+
+    public static final Pref[] PREFS = {
+        new Pref("010000", "北海道", 43.0642, 141.3469), new Pref("020000", "青森県", 40.8244, 140.7400),
+        new Pref("030000", "岩手県", 39.7019, 141.1545), new Pref("040000", "宮城県", 38.2682, 140.8694),
+        new Pref("050000", "秋田県", 39.7186, 140.1024), new Pref("060000", "山形県", 38.2404, 140.3633),
+        new Pref("070000", "福島県", 37.7503, 140.4676), new Pref("080000", "茨城県", 36.3418, 140.4468),
+        new Pref("090000", "栃木県", 36.5657, 139.8836), new Pref("100000", "群馬県", 36.3895, 139.0634),
+        new Pref("110000", "埼玉県", 35.8617, 139.6455), new Pref("120000", "千葉県", 35.6074, 140.1065),
+        new Pref("130000", "東京都", 35.6895, 139.6917), new Pref("140000", "神奈川県", 35.4478, 139.6425),
+        new Pref("150000", "新潟県", 37.9024, 139.0232), new Pref("160000", "富山県", 36.6953, 137.2113),
+        new Pref("170000", "石川県", 36.5947, 136.6256), new Pref("180000", "福井県", 36.0652, 136.2216),
+        new Pref("190000", "山梨県", 35.6642, 138.5684), new Pref("200000", "長野県", 36.6513, 138.1810),
+        new Pref("210000", "岐阜県", 35.3912, 136.7223), new Pref("220000", "静岡県", 34.9769, 138.3831),
+        new Pref("230000", "愛知県", 35.1815, 136.9066), new Pref("240000", "三重県", 34.7303, 136.5086),
+        new Pref("250000", "滋賀県", 35.0045, 135.8686), new Pref("260000", "京都府", 35.0210, 135.7556),
+        new Pref("270000", "大阪府", 34.6863, 135.5200), new Pref("280000", "兵庫県", 34.6913, 135.1830),
+        new Pref("290000", "奈良県", 34.6851, 135.8048), new Pref("300000", "和歌山県", 34.2260, 135.1675),
+        new Pref("310000", "鳥取県", 35.5039, 134.2377), new Pref("320000", "島根県", 35.4723, 133.0505),
+        new Pref("330000", "岡山県", 34.6618, 133.9350), new Pref("340000", "広島県", 34.3966, 132.4596),
+        new Pref("350000", "山口県", 34.1861, 131.4706), new Pref("360000", "徳島県", 34.0658, 134.5593),
+        new Pref("370000", "香川県", 34.3401, 134.0434), new Pref("380000", "愛媛県", 33.8416, 132.7661),
+        new Pref("390000", "高知県", 33.5597, 133.5311), new Pref("400000", "福岡県", 33.6064, 130.4183),
+        new Pref("410000", "佐賀県", 33.2494, 130.2988), new Pref("420000", "長崎県", 32.7448, 129.8737),
+        new Pref("430000", "熊本県", 32.7898, 130.7417), new Pref("440000", "大分県", 33.2382, 131.6126),
+        new Pref("450000", "宮崎県", 31.9111, 131.4202), new Pref("460000", "鹿児島県", 31.5602, 130.5581),
+        new Pref("470000", "沖縄県", 26.2124, 127.6809),
+    };
+
+    // 気象庁の都道府県コード → 正式名称 (EEW の対象地域照合などに使う)
+    public static String prefNameForCode(String prefCode) {
+        if (prefCode != null) {
+            for (Pref p : PREFS) if (p.code.equals(prefCode)) return p.name;
+        }
+        return "";
+    }
+
+    // 県庁所在地が最も近い都道府県を推定する (GPS 地点登録用)
+    public static Pref nearestPref(double lat, double lon) {
+        Pref best = null;
+        double bestKm = Double.MAX_VALUE;
+        for (Pref p : PREFS) {
+            double d = haversineKm(lat, lon, p.capLat, p.capLon);
+            if (d < bestKm) { bestKm = d; best = p; }
+        }
+        return best;
+    }
+
+    // 予報JSONから一次細分区域名の一覧を返す (GPS 地点登録の地域選択用)
+    public static java.util.List<String> forecastAreaNames(String prefCode) throws Exception {
+        JSONArray arr = new JSONArray(fetch("https://www.jma.go.jp/bosai/forecast/data/forecast/" + prefCode + ".json"));
+        JSONObject first = arr.getJSONObject(0);
+        JSONArray areas = first.getJSONArray("timeSeries").getJSONObject(0).getJSONArray("areas");
+        java.util.List<String> names = new java.util.ArrayList<>();
+        for (int i = 0; i < areas.length(); i++) {
+            String n = areas.getJSONObject(i).getJSONObject("area").optString("name");
+            if (!n.isEmpty() && !names.contains(n)) names.add(n);
+        }
+        return names;
+    }
+
+    // ===== 8. 気象レーダー (RainViewer + 地理院タイル) =====
+    public static final class RadarImage {
+        public final android.graphics.Bitmap bitmap;
+        public final String caption;
+        public RadarImage(android.graphics.Bitmap bitmap, String caption) {
+            this.bitmap = bitmap; this.caption = caption;
+        }
+    }
+
+    // slippy map (XYZ) のタイル番号
+    public static int tileX(double lon, int z) {
+        int n = 1 << z;
+        int x = (int) Math.floor((lon + 180.0) / 360.0 * n);
+        return Math.max(0, Math.min(n - 1, x));
+    }
+
+    public static int tileY(double lat, int z) {
+        int n = 1 << z;
+        double rad = Math.toRadians(Math.max(-85.0511, Math.min(85.0511, lat)));
+        int y = (int) Math.floor((1.0 - Math.log(Math.tan(rad) + 1.0 / Math.cos(rad)) / Math.PI) / 2.0 * n);
+        return Math.max(0, Math.min(n - 1, y));
+    }
+
+    public static byte[] fetchBytes(String urlStr) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+        try {
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(15000);
+            conn.setRequestProperty("User-Agent", "AEGIS-Android/1.5");
+            if (conn.getResponseCode() != 200) throw new IllegalStateException("HTTP " + conn.getResponseCode());
+            java.io.InputStream in = conn.getInputStream();
+            if ("gzip".equalsIgnoreCase(conn.getContentEncoding())) in = new java.util.zip.GZIPInputStream(in);
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int r;
+            while ((r = in.read(buf)) != -1) bos.write(buf, 0, r);
+            return bos.toByteArray();
+        } finally {
+            conn.disconnect();
+        }
+    }
+
+    private static android.graphics.Bitmap fetchTile(String url) {
+        try {
+            byte[] bytes = fetchBytes(url);
+            return android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // 選択地点を中心に ズーム8・3×3タイル (地理院地図 + RainViewer レーダー) を合成する
+    public static RadarImage radarImage(Location loc) throws Exception {
+        JSONObject root = new JSONObject(fetch("https://api.rainviewer.com/public/weather-maps.json"));
+        JSONArray past = root.getJSONObject("radar").getJSONArray("past");
+        if (past.length() == 0) throw new IllegalStateException("レーダーフレームがありません");
+        JSONObject last = past.getJSONObject(past.length() - 1);
+        String path = last.getString("path");
+        long epochSec = last.getLong("time");
+        final int z = 8, tile = 256;
+        final int cx = tileX(loc.lon, z), cy = tileY(loc.lat, z);
+        // 18枚のタイルを並列取得する
+        java.util.Map<String, java.util.concurrent.Future<android.graphics.Bitmap>> futures = new java.util.HashMap<>();
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                final int x = cx + dx, y = cy + dy;
+                if (x < 0 || y < 0 || x >= (1 << z) || y >= (1 << z)) continue;
+                futures.put("b" + dx + "," + dy, FETCH_POOL.submit(() -> fetchTile(
+                        "https://cyberjapandata.gsi.go.jp/xyz/std/" + z + "/" + x + "/" + y + ".png")));
+                futures.put("r" + dx + "," + dy, FETCH_POOL.submit(() -> fetchTile(
+                        "https://tilecache.rainviewer.com" + path + "/256/" + z + "/" + x + "/" + y + "/2/1_1.png")));
+            }
+        }
+        android.graphics.Bitmap canvas = android.graphics.Bitmap.createBitmap(tile * 3, tile * 3, android.graphics.Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas cv = new android.graphics.Canvas(canvas);
+        cv.drawColor(android.graphics.Color.parseColor("#0B1220"));
+        int radarOk = 0;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                int px = (dx + 1) * tile, py = (dy + 1) * tile;
+                try {
+                    java.util.concurrent.Future<android.graphics.Bitmap> fb = futures.get("b" + dx + "," + dy);
+                    android.graphics.Bitmap b = fb == null ? null : fb.get(30, java.util.concurrent.TimeUnit.SECONDS);
+                    if (b != null) cv.drawBitmap(b, px, py, null);
+                } catch (Exception ignored) {}
+                try {
+                    java.util.concurrent.Future<android.graphics.Bitmap> fr = futures.get("r" + dx + "," + dy);
+                    android.graphics.Bitmap r = fr == null ? null : fr.get(30, java.util.concurrent.TimeUnit.SECONDS);
+                    if (r != null) { cv.drawBitmap(r, px, py, null); radarOk++; }
+                } catch (Exception ignored) {}
+            }
+        }
+        // 中心に地点マーカー (二重丸)
+        android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        paint.setStyle(android.graphics.Paint.Style.STROKE);
+        paint.setStrokeWidth(6f);
+        paint.setColor(android.graphics.Color.WHITE);
+        cv.drawCircle(tile * 1.5f, tile * 1.5f, 26f, paint);
+        paint.setStrokeWidth(4f);
+        paint.setColor(android.graphics.Color.parseColor("#FF5252"));
+        cv.drawCircle(tile * 1.5f, tile * 1.5f, 17f, paint);
+        paint.setStyle(android.graphics.Paint.Style.FILL);
+        cv.drawCircle(tile * 1.5f, tile * 1.5f, 5f, paint);
+        java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat("M月d日 H:mm", java.util.Locale.JAPAN);
+        fmt.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Tokyo"));
+        String caption = "レーダー観測時刻： " + fmt.format(new java.util.Date(epochSec * 1000L))
+                + "\nレーダー: RainViewer（気象庁データ） / 地図: 国土地理院"
+                + (radarOk == 0 ? "\n（レーダー画像を取得できませんでした）" : "");
+        return new RadarImage(canvas, caption);
+    }
+
+    // ===== 9. 緊急地震速報 (構造化・主要動到達カウントダウン) =====
+    public static final class EewArea {
+        public final String pref, name, arrivalTime;
+        public EewArea(String pref, String name, String arrivalTime) {
+            this.pref = pref; this.name = name; this.arrivalTime = arrivalTime;
+        }
+    }
+
+    public static final class EewInfo {
+        public long originMillis;      // 発生時刻
+        public long reportMillis;      // 報の時刻
+        public boolean isCancel, isFinal;
+        public String hypoName = "不明";
+        public double lat, lon;        // 震源座標 (0 は不明)
+        public int depth = -1;         // 深さ km (-1 は不明)
+        public int estMaxScale = -1;   // 推定最大震度 (P2P形式)
+        public final java.util.List<EewArea> areas = new java.util.ArrayList<>();
+    }
+
+    // 実データのある最新報が1時間以内なら構造化して返す。それ以外は null
+    public static EewInfo eewInfo() {
+        try {
+            JSONArray data = new JSONArray(fetch("https://api.p2pquake.net/v2/history?codes=554&limit=3"));
+            for (int i = 0; i < data.length(); i++) {
+                JSONObject item = data.getJSONObject(i);
+                JSONObject eq = item.optJSONObject("earthquake");
+                JSONArray areas = item.optJSONArray("areas");
+                if (eq == null && areas == null) continue;
+                String time = item.optString("time");
+                long report = parseP2pTime(time);
+                if (report == 0 || System.currentTimeMillis() - report > 60 * 60 * 1000L) return null;
+                EewInfo info = new EewInfo();
+                info.reportMillis = report;
+                info.isCancel = item.optBoolean("isCancel");
+                info.isFinal = item.optBoolean("isFinal");
+                info.originMillis = report;
+                if (eq != null) {
+                    long origin = parseP2pTime(eq.optString("originTime"));
+                    if (origin > 0) info.originMillis = origin;
+                    JSONObject hypo = eq.optJSONObject("hypocenter");
+                    if (hypo != null) {
+                        info.hypoName = hypo.optString("name", "不明");
+                        info.lat = hypo.optDouble("latitude", 0);
+                        info.lon = hypo.optDouble("longitude", 0);
+                        info.depth = hypo.optInt("depth", -1);
+                    }
+                    info.estMaxScale = eq.optInt("maxScale", -1);
+                }
+                if (areas != null) {
+                    for (int j = 0; j < areas.length(); j++) {
+                        JSONObject a = areas.getJSONObject(j);
+                        info.areas.add(new EewArea(a.optString("pref"), a.optString("name"), a.optString("arrivalTime")));
+                    }
+                }
+                return info;
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    // 地点への主要動到達予想 (epoch ミリ秒)。該当なしは -1。estimatedOut[0] に推定かどうかを返す
+    // arrivalTime があればそれを使い、なければ震源距離と深さから S波 3.5km/s で推定する
+    public static long arrivalMillis(EewInfo info, Location loc, boolean[] estimatedOut) {
+        if (estimatedOut != null && estimatedOut.length > 0) estimatedOut[0] = false;
+        String prefName = prefNameForCode(loc.prefCode);
+        EewArea match = null;
+        for (EewArea a : info.areas) {
+            if (!prefName.isEmpty() && prefName.equals(a.pref)) { match = a; break; }
+        }
+        if (match == null) {
+            for (EewArea a : info.areas) {
+                if (!loc.areaName.isEmpty() && a.name.contains(loc.areaName)) { match = a; break; }
+            }
+        }
+        if (match != null && match.arrivalTime != null && !match.arrivalTime.isEmpty()) {
+            long t = parseP2pTime(match.arrivalTime);
+            if (t > 0) return t;
+        }
+        if (info.lat != 0 && info.lon != 0 && info.depth >= 0 && info.originMillis > 0) {
+            double epi = haversineKm(loc.lat, loc.lon, info.lat, info.lon);
+            double hypo = Math.sqrt(epi * epi + info.depth * info.depth);
+            if (estimatedOut != null && estimatedOut.length > 0) estimatedOut[0] = true;
+            return info.originMillis + (long) (hypo / 3.5 * 1000.0);
+        }
+        return -1;
+    }
+
+    // カウントダウンがまだ意味を持つか (到達前、または到達後30秒以内)
+    public static boolean countdownActive(EewInfo info, Location[] locs, long now) {
+        if (info == null || info.isCancel) return false;
+        boolean[] est = new boolean[1];
+        for (Location loc : locs) {
+            long arr = arrivalMillis(info, loc, est);
+            if (arr > 0 && now < arr + 30 * 1000L) return true;
+        }
+        return false;
+    }
+
+    // EEW の静的本文 (eewText と同じ内容を構造化データから作る)
+    public static String eewStaticBody(EewInfo info) {
+        if (info.isCancel) {
+            String t = new java.text.SimpleDateFormat("yyyy/MM/dd HH:mm:ss", java.util.Locale.JAPAN).format(new java.util.Date(info.reportMillis));
+            return "緊急地震速報は取り消されました（" + t.substring(5, 16) + "）";
+        }
+        StringBuilder sb = new StringBuilder();
+        if (info.isFinal) sb.append("（最終報）");
+        sb.append("震源 ").append(info.hypoName);
+        if (info.estMaxScale > 0) sb.append(" / 推定最大震度 ").append(scaleToStr(info.estMaxScale));
+        java.util.LinkedHashSet<String> prefs = new java.util.LinkedHashSet<>();
+        for (EewArea a : info.areas) {
+            if (!a.pref.isEmpty() && prefs.size() < 6) prefs.add(a.pref);
+        }
+        if (!prefs.isEmpty()) sb.append("\n対象: ").append(String.join("、", prefs));
+        sb.append("\n強い揺れに備えてください。");
+        return sb.toString();
+    }
+
+    // カウントダウンカードの本文 (1秒ごとに再計算される)
+    public static String eewCountdownBody(EewInfo info, Location[] locs, long now) {
+        StringBuilder sb = new StringBuilder(eewStaticBody(info));
+        boolean[] est = new boolean[1];
+        for (Location loc : locs) {
+            long arr = arrivalMillis(info, loc, est);
+            if (arr <= 0) continue;
+            if (now < arr) {
+                long sec = (arr - now + 999) / 1000;
+                sb.append("\n⏱ ").append(loc.name).append(": あと約").append(sec).append("秒");
+                if (est[0]) sb.append("（推定）");
+            } else if (now < arr + 30 * 1000L) {
+                sb.append("\n⏱ ").append(loc.name).append(": 到達した可能性が高いです");
+            }
+        }
+        return sb.toString();
+    }
+
+    // ===== 10. 台風 (targetTc.json) =====
+    // 台風があるときだけ表示用テキストを返す。なければ null
+    public static String typhoonText() {
+        try {
+            JSONArray arr = new JSONArray(fetch("https://www.jma.go.jp/bosai/typhoon/data/targetTc.json").trim());
+            if (arr.length() == 0) return null;
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < arr.length(); i++) {
+                Object el = arr.get(i);
+                if (i > 0) sb.append("\n");
+                if (el instanceof JSONObject) {
+                    JSONObject o = (JSONObject) el;
+                    // 名称・番号らしきフィールドを優先し、なければ文字列フィールドを連結する (防御的)
+                    String[] keys = {"name", "tcName", "typhoonName", "title", "number", "tcNumber", "id", "href"};
+                    java.util.List<String> parts = new java.util.ArrayList<>();
+                    for (String k : keys) {
+                        String v = o.optString(k);
+                        if (!v.isEmpty() && !parts.contains(v)) parts.add(v);
+                    }
+                    if (parts.isEmpty()) {
+                        java.util.Iterator<String> it = o.keys();
+                        while (it.hasNext()) {
+                            Object v = o.opt(it.next());
+                            if (v instanceof String && !((String) v).isEmpty()) parts.add((String) v);
+                        }
+                    }
+                    sb.append(String.join(" / ", parts));
+                } else {
+                    sb.append(String.valueOf(el));
+                }
+            }
+            return sb.toString().trim().isEmpty() ? null : sb.toString().trim();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // ===== 11. ニュース要約 (NHK RSS) =====
+    public static final class NewsItem {
+        public final String title, timeText, summary, link;
+        public NewsItem(String title, String timeText, String summary, String link) {
+            this.title = title; this.timeText = timeText; this.summary = summary; this.link = link;
+        }
+    }
+
+    static final String[] NEWS_KEYWORDS = {
+        "地震", "津波", "警報", "特別警報", "台風", "大雨", "洪水", "土砂", "避難", "震度",
+        "噴火", "熱中症", "暴風", "大雪", "竜巻", "線状降水帯"
+    };
+
+    // description の HTML を除去し、約80字に切り詰める (途中で切れたら「…」)
+    public static String truncateSummary(String raw, int maxLen) {
+        if (raw == null) return "";
+        String s = raw.replaceAll("<[^>]+>", " ").replaceAll("\\s+", " ").trim();
+        if (s.length() <= maxLen) return s;
+        return s.substring(0, maxLen) + "…";
+    }
+
+    private static java.util.List<NewsItem> parseRss(String xml) {
+        java.util.List<NewsItem> out = new java.util.ArrayList<>();
+        try {
+            org.xmlpull.v1.XmlPullParserFactory factory = org.xmlpull.v1.XmlPullParserFactory.newInstance();
+            org.xmlpull.v1.XmlPullParser parser = factory.newPullParser();
+            parser.setInput(new java.io.StringReader(xml));
+            java.text.SimpleDateFormat inFmt = new java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss Z", java.util.Locale.US);
+            java.text.SimpleDateFormat outFmt = new java.text.SimpleDateFormat("H:mm", java.util.Locale.JAPAN);
+            outFmt.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Tokyo"));
+            boolean inItem = false;
+            String tag = "", title = "", link = "", desc = "", pub = "";
+            int ev = parser.getEventType();
+            while (ev != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                if (ev == org.xmlpull.v1.XmlPullParser.START_TAG) {
+                    tag = parser.getName();
+                    if ("item".equals(tag)) { inItem = true; title = ""; link = ""; desc = ""; pub = ""; }
+                } else if (ev == org.xmlpull.v1.XmlPullParser.TEXT && inItem) {
+                    String text = parser.getText();
+                    if (text != null) {
+                        if ("title".equals(tag)) title += text;
+                        else if ("link".equals(tag)) link += text;
+                        else if ("description".equals(tag)) desc += text;
+                        else if ("pubDate".equals(tag)) pub += text;
+                    }
+                } else if (ev == org.xmlpull.v1.XmlPullParser.END_TAG) {
+                    if ("item".equals(parser.getName()) && inItem) {
+                        inItem = false;
+                        String timeText = "";
+                        try {
+                            java.util.Date d = inFmt.parse(pub.trim());
+                            if (d != null) timeText = outFmt.format(d);
+                        } catch (Exception ignored) {}
+                        out.add(new NewsItem(title.trim(), timeText, truncateSummary(desc, 80), link.trim()));
+                    }
+                    tag = "";
+                }
+                ev = parser.next();
+            }
+        } catch (Exception ignored) {}
+        return out;
+    }
+
+    // NHK 主要(cat0) + 社会(cat1) をマージし、防災関連を優先して最大8件返す
+    public static java.util.List<NewsItem> newsItems() throws Exception {
+        java.util.concurrent.Future<String> f0 = FETCH_POOL.submit(() -> fetch("https://www3.nhk.or.jp/rss/news/cat0.xml"));
+        java.util.concurrent.Future<String> f1 = FETCH_POOL.submit(() -> fetch("https://www3.nhk.or.jp/rss/news/cat1.xml"));
+        java.util.List<NewsItem> merged = new java.util.ArrayList<>();
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        for (java.util.concurrent.Future<String> f : java.util.Arrays.asList(f0, f1)) {
+            try {
+                for (NewsItem n : parseRss(f.get(30, java.util.concurrent.TimeUnit.SECONDS))) {
+                    if (!n.link.isEmpty() && seen.add(n.link)) merged.add(n);
+                }
+            } catch (Exception ignored) {}
+        }
+        if (merged.isEmpty()) throw new IllegalStateException("ニュースを取得できませんでした");
+        java.util.List<NewsItem> disaster = new java.util.ArrayList<>();
+        java.util.List<NewsItem> general = new java.util.ArrayList<>();
+        for (NewsItem n : merged) {
+            boolean hit = false;
+            for (String kw : NEWS_KEYWORDS) {
+                if (n.title.contains(kw) || n.summary.contains(kw)) { hit = true; break; }
+            }
+            (hit ? disaster : general).add(n);
+        }
+        java.util.List<NewsItem> out = new java.util.ArrayList<>(disaster);
+        // 防災関連が少ない場合は主要ニュースも少し混ぜる (合計 最大8件)
+        for (NewsItem n : general) {
+            if (out.size() >= 8) break;
+            if (disaster.size() >= 4 && out.size() >= 4) break;
+            out.add(n);
+        }
+        return out.size() > 8 ? out.subList(0, 8) : out;
+    }
+
+    // ===== 12. 接続テスト (自己診断) =====
+    // 結果1行の整形 (純粋関数)
+    public static String diagLine(String name, boolean ok, long ms, String reason) {
+        if (ok) return "○ " + name + "：接続OK（" + ms + "ms）";
+        return "× " + name + "：失敗（" + (reason == null || reason.isEmpty() ? "不明なエラー" : reason) + "）";
+    }
+
+    private static java.util.concurrent.Callable<String> diagTask(String name, String url) {
+        return () -> {
+            long start = System.currentTimeMillis();
+            try {
+                fetch(url);
+                return diagLine(name, true, System.currentTimeMillis() - start, "");
+            } catch (Exception e) {
+                return diagLine(name, false, System.currentTimeMillis() - start, friendlyError(e));
+            }
+        };
+    }
+
+    // 各データソースへ実際にリクエストし、ソースごとの結果行を返す
+    public static java.util.List<String> diagnose(boolean serverMode, String serverUrl) {
+        Location loc = effectiveLocations()[0];
+        java.util.List<java.util.concurrent.Callable<String>> tasks = new java.util.ArrayList<>();
+        tasks.add(diagTask("P2P 地震情報（551）", "https://api.p2pquake.net/v2/history?codes=551&limit=1"));
+        tasks.add(diagTask("P2P 津波情報（552）", "https://api.p2pquake.net/v2/history?codes=552&limit=1"));
+        tasks.add(diagTask("P2P 緊急地震速報（554）", "https://api.p2pquake.net/v2/history?codes=554&limit=1"));
+        tasks.add(diagTask("気象庁 予報", "https://www.jma.go.jp/bosai/forecast/data/forecast/" + loc.prefCode + ".json"));
+        tasks.add(diagTask("気象庁 警報", "https://www.jma.go.jp/bosai/warning/data/warning/" + loc.prefCode + ".json"));
+        tasks.add(diagTask("気象庁 台風", "https://www.jma.go.jp/bosai/typhoon/data/targetTc.json"));
+        tasks.add(diagTask("Open-Meteo", "https://api.open-meteo.com/v1/forecast?latitude=" + loc.lat + "&longitude=" + loc.lon + "&current=temperature_2m&timezone=Asia%2FTokyo"));
+        tasks.add(diagTask("RainViewer レーダー", "https://api.rainviewer.com/public/weather-maps.json"));
+        tasks.add(diagTask("NHK ニュース RSS", "https://www3.nhk.or.jp/rss/news/cat0.xml"));
+        if (serverMode) {
+            String base = serverUrl == null ? "" : serverUrl.trim();
+            if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+            tasks.add(diagTask("AEGISサーバー", base + "/api/briefing"));
+        }
+        java.util.List<java.util.concurrent.Future<String>> futures = new java.util.ArrayList<>();
+        for (java.util.concurrent.Callable<String> t : tasks) futures.add(FETCH_POOL.submit(t));
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        for (java.util.concurrent.Future<String> f : futures) {
+            try { lines.add(f.get(60, java.util.concurrent.TimeUnit.SECONDS)); }
+            catch (Exception e) { lines.add(diagLine("（不明なソース）", false, 0, friendlyError(e))); }
+        }
+        return lines;
     }
 }

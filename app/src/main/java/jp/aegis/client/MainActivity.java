@@ -1,10 +1,14 @@
 package jp.aegis.client;
 
+import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -12,6 +16,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.RadioGroup;
 import android.widget.TextView;
@@ -49,6 +54,52 @@ public class MainActivity extends Activity {
         mainHandler.postDelayed(autoRefresh, 5 * 60 * 1000L);
     }
 
+    // 地震モニター: 地震タブ表示中は30秒ごとに自動更新する
+    private final Runnable monitorTick = this::monitorTickRun;
+
+    private void monitorTickRun() {
+        if (!"quakes".equals(currentTab)) return; // タブを離れたら停止
+        if (!demoMode) loadCurrent(); // テスト表示中は実データで上書きしない
+        mainHandler.postDelayed(monitorTick, 30 * 1000L);
+    }
+
+    // EEW 到達カウントダウン: 1秒ごとにカード本文を再描画する
+    private AegisData.EewInfo currentEew;
+    private TextView eewBodyView;
+    private final Runnable eewTick = this::eewTickRun;
+
+    private void eewTickRun() {
+        if (eewBodyView == null || currentEew == null) return;
+        long now = System.currentTimeMillis();
+        AegisData.Location[] locs = AegisData.effectiveLocations();
+        if (AegisData.countdownActive(currentEew, locs, now)) {
+            eewBodyView.setText(AegisData.eewCountdownBody(currentEew, locs, now));
+            mainHandler.postDelayed(eewTick, 1000L);
+        } else {
+            eewBodyView.setText(AegisData.eewStaticBody(currentEew)); // 通常の EEW 表示に戻す
+        }
+    }
+
+    private void startEewTicker() {
+        mainHandler.removeCallbacks(eewTick);
+        eewTickRun();
+    }
+
+    private void stopEewTicker() {
+        mainHandler.removeCallbacks(eewTick);
+        eewBodyView = null;
+        currentEew = null;
+    }
+
+    // レーダータブの状態
+    private int radarLocIndex = 0;
+    private ImageView radarImageView;
+    private TextView radarCaptionView;
+
+    // テスト表示 (デモ) の状態
+    private boolean demoMode = false;
+    private AegisData.EewInfo demoEew;
+
     private int dp(int v) {
         return Math.round(v * getResources().getDisplayMetrics().density);
     }
@@ -81,15 +132,28 @@ public class MainActivity extends Activity {
 
         Button tabBriefing = findViewById(R.id.tabBriefing);
         Button tabQuakes = findViewById(R.id.tabQuakes);
+        Button tabRadar = findViewById(R.id.tabRadar);
+        Button tabNews = findViewById(R.id.tabNews);
         Button tabSettings = findViewById(R.id.tabSettings);
         Button refresh = findViewById(R.id.refreshButton);
         Button saveSettings = findViewById(R.id.saveSettings);
         Button testConnection = findViewById(R.id.testConnection);
+        Button gpsButton = findViewById(R.id.gpsButton);
+        Button diagTest = findViewById(R.id.diagTest);
+        Button demoTest = findViewById(R.id.demoTest);
 
         tabBriefing.setOnClickListener(v -> showTab("briefing"));
         tabQuakes.setOnClickListener(v -> showTab("quakes"));
+        tabRadar.setOnClickListener(v -> showTab("radar"));
+        tabNews.setOnClickListener(v -> showTab("news"));
         tabSettings.setOnClickListener(v -> showTab("settings"));
         refresh.setOnClickListener(v -> loadCurrent());
+        gpsButton.setOnClickListener(v -> onGpsClicked());
+        diagTest.setOnClickListener(v -> runDiagnose());
+        demoTest.setOnClickListener(v -> {
+            if (demoMode) disableDemo();
+            else enableDemo();
+        });
         testConnection.setOnClickListener(v -> testServer());
         saveSettings.setOnClickListener(v -> {
             String m = modeGroup.getCheckedRadioButtonId() == R.id.modeServer ? "server" : "direct";
@@ -106,7 +170,9 @@ public class MainActivity extends Activity {
 
     private void showTab(String tab) {
         currentTab = tab;
+        mainHandler.removeCallbacks(monitorTick);
         if ("settings".equals(tab)) {
+            stopEewTicker();
             settingsPanel.setVisibility(View.VISIBLE);
             List<AegisData.Section> sections = new ArrayList<>();
             sections.add(new AegisData.Section("⚙ 設定について",
@@ -115,14 +181,30 @@ public class MainActivity extends Activity {
                             + "サーバーURLの例:\n"
                             + "・同じWi-FiのPC: http://192.168.1.10:8765\n"
                             + "・AndroidエミュレータからPC: http://10.0.2.2:8765\n\n"
-                            + "表示中は5分ごとに自動更新されます。",
+                            + "レーダー・ニュースは直接取得の機能です（サーバーモードでも使えます）。\n"
+                            + "表示中は5分ごとに自動更新されます（地震タブは30秒ごと）。",
                     "info"));
             render(sections, new ArrayList<>());
             status.setText("設定");
             return;
         }
         settingsPanel.setVisibility(View.GONE);
+        if ("quakes".equals(tab)) {
+            mainHandler.postDelayed(monitorTick, 30 * 1000L);
+        }
+        if (demoMode && ("briefing".equals(tab) || "quakes".equals(tab))) {
+            renderDemo(tab);
+            return;
+        }
         loadCurrent();
+    }
+
+    // コンテナ内のカード類だけを取り除く (設定パネルはコンテナの子なので残す)
+    private void clearContainer() {
+        for (int i = container.getChildCount() - 1; i >= 0; i--) {
+            View child = container.getChildAt(i);
+            if (child != settingsPanel) container.removeView(child);
+        }
     }
 
     // ----- 任意地点 (カスタム監視地点) -----
@@ -254,11 +336,12 @@ public class MainActivity extends Activity {
             if (qa != null) {
                 for (int i = 0; i < qa.length(); i++) {
                     org.json.JSONObject o = qa.getJSONObject(i);
-                    quakes.add(new AegisData.Quake(o.optString("p"), o.optString("d"), o.optString("s"), o.optInt("m"), o.optDouble("la", 0), o.optDouble("lo", 0)));
+                    quakes.add(new AegisData.Quake(o.optString("p"), o.optString("d"), o.optString("s"), o.optInt("m"), o.optDouble("la", 0), o.optDouble("lo", 0), o.optLong("tm", 0)));
                 }
             }
             if (sections.isEmpty() && quakes.isEmpty()) return false;
-            render(sections, quakes);
+            if ("quakes".equals(currentTab)) renderQuakes(sections, quakes, null, false);
+            else render(sections, quakes);
             return true;
         } catch (Exception e) {
             return false;
@@ -277,7 +360,7 @@ public class MainActivity extends Activity {
             }
             org.json.JSONArray qa = new org.json.JSONArray();
             for (AegisData.Quake q : quakes) {
-                qa.put(new org.json.JSONObject().put("p", q.place).put("d", q.detail).put("s", q.sev).put("m", q.maxScale).put("la", q.lat).put("lo", q.lon));
+                qa.put(new org.json.JSONObject().put("p", q.place).put("d", q.detail).put("s", q.sev).put("m", q.maxScale).put("la", q.lat).put("lo", q.lon).put("tm", q.originMillis));
             }
             org.json.JSONObject root = new org.json.JSONObject().put("sections", sa).put("quakes", qa).put("ts", System.currentTimeMillis());
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(key, root.toString()).apply();
@@ -285,6 +368,12 @@ public class MainActivity extends Activity {
     }
 
     private void loadCurrent() {
+        // 実データの取得が始まったらテスト表示は解除する
+        demoMode = false;
+        demoEew = null;
+        stopEewTicker();
+        if ("radar".equals(currentTab)) { loadRadar(); return; }
+        if ("news".equals(currentTab)) { loadNews(); return; }
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         String mode = prefs.getString(KEY_MODE, "direct");
         String server = prefs.getString(KEY_SERVER, "http://10.0.2.2:8765");
@@ -295,7 +384,7 @@ public class MainActivity extends Activity {
         String ct = cached ? cacheTime(key) : null;
         status.setText(cached ? "キャッシュ" + (ct != null ? "（" + ct + "時点）" : "") + "を表示中（更新中…）" : "取得中…");
         if (!cached) {
-            container.removeAllViews();
+            clearContainer();
             TextView loading = new TextView(this);
             loading.setText("読み込んでいます…");
             loading.setTextColor(Color.parseColor("#8A94A6"));
@@ -305,10 +394,12 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             List<AegisData.Section> sections = new ArrayList<>();
             List<AegisData.Quake> quakes = new ArrayList<>();
+            AegisData.EewInfo fetchedEew = null;
             try {
                 if ("quakes".equals(tab) && !"server".equals(mode)) {
-                    sections.addAll(AegisData.quakesSections());
+                    sections.addAll(AegisData.quakesSections(false));
                     quakes.addAll(AegisData.quakeItems(15));
+                    fetchedEew = AegisData.eewInfo();
                     if (quakes.isEmpty()) {
                         sections.add(new AegisData.Section("🌏 地震情報", "最近の地震情報はありません。", "ok"));
                     }
@@ -327,6 +418,7 @@ public class MainActivity extends Activity {
             }
             List<AegisData.Section> resultSections = sections;
             List<AegisData.Quake> resultQuakes = quakes;
+            AegisData.EewInfo resultEew = fetchedEew;
             String now = new SimpleDateFormat("HH:mm:ss", Locale.JAPAN).format(new Date());
             // 全セクションが取得失敗なら「最終更新」と表示しない (鮮度の誤認防止)
             boolean allFailed = !resultSections.isEmpty();
@@ -336,7 +428,11 @@ public class MainActivity extends Activity {
             final boolean failed = allFailed && resultQuakes.isEmpty();
             mainHandler.post(() -> {
                 if (gen != loadGeneration) return; // 既に新しい読み込みが始まっている
-                render(resultSections, resultQuakes);
+                if ("quakes".equals(tab) && !"server".equals(mode)) {
+                    renderQuakes(resultSections, resultQuakes, resultEew, false);
+                } else {
+                    render(resultSections, resultQuakes);
+                }
                 saveCache(key, resultSections, resultQuakes);
                 status.setText(failed ? "⚠ 取得に失敗しました（通信状態を確認してください）"
                         : "最終更新: " + now + "（" + ("server".equals(mode) ? "サーバー" : "直接取得") + "）");
@@ -346,9 +442,72 @@ public class MainActivity extends Activity {
 
     // ----- カード描画 -----
     private void render(List<AegisData.Section> sections, List<AegisData.Quake> quakes) {
-        container.removeAllViews();
+        clearContainer();
         for (AegisData.Section s : sections) container.addView(makeCard(s));
-        for (AegisData.Quake q : quakes) container.addView(makeQuakeCard(q));
+        for (AegisData.Quake q : quakes) container.addView(makeQuakeCard(q, false));
+    }
+
+    // 地震モニター用描画: EEWカウントダウンカードを最上部に固定し、最新の地震を大きく出す
+    private void renderQuakes(List<AegisData.Section> sections, List<AegisData.Quake> quakes, AegisData.EewInfo eew, boolean demo) {
+        clearContainer();
+        stopEewTicker();
+        if (eew != null && !eew.isCancel) {
+            currentEew = eew;
+            container.addView(makeEewCountdownCard(eew, demo));
+            startEewTicker();
+        } else if (eew != null) {
+            container.addView(makeCard(new AegisData.Section("🚨 緊急地震速報", AegisData.eewStaticBody(eew), "info")));
+        }
+        for (AegisData.Section s : sections) container.addView(makeCard(s));
+        for (int i = 0; i < quakes.size(); i++) {
+            container.addView(makeQuakeCard(quakes.get(i), i == 0));
+        }
+    }
+
+    // EEW カウントダウンカード (本文 TextView を保持し、1秒ごとに再描画する)
+    private View makeEewCountdownCard(AegisData.EewInfo eew, boolean demo) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(14), dp(12), dp(14), dp(12));
+        card.setBackground(cardBackground());
+        card.setLayoutParams(cardParams());
+
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView dot = new TextView(this);
+        dot.setText("●");
+        dot.setTextColor(levelColor("danger"));
+        dot.setTextSize(11);
+        dot.setPadding(0, 0, dp(8), 0);
+        TextView title = new TextView(this);
+        title.setText(demo ? "🚨 【テスト】緊急地震速報" : "🚨 緊急地震速報");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(16);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        titleRow.addView(dot);
+        titleRow.addView(title);
+        card.addView(titleRow);
+
+        TextView body = new TextView(this);
+        body.setText(AegisData.eewCountdownBody(eew, AegisData.effectiveLocations(), System.currentTimeMillis()));
+        body.setTextColor(Color.parseColor("#D8DEE9"));
+        body.setTextSize(15);
+        body.setLineSpacing(0, 1.3f);
+        body.setPadding(0, dp(6), 0, 0);
+        card.addView(body);
+        eewBodyView = body;
+        return card;
+    }
+
+    // 発生からの経過表示 (モニターの拡大カード用)
+    private String elapsedText(long originMillis) {
+        if (originMillis <= 0) return "";
+        long min = (System.currentTimeMillis() - originMillis) / 60000L;
+        if (min < 1) return "たった今発生";
+        if (min < 60) return min + "分前に発生";
+        if (min < 60 * 24) return (min / 60) + "時間" + (min % 60) + "分前に発生";
+        return (min / (60 * 24)) + "日前に発生";
     }
 
     private int levelColor(String level) {
@@ -408,18 +567,18 @@ public class MainActivity extends Activity {
         return card;
     }
 
-    private View makeQuakeCard(AegisData.Quake q) {
+    private View makeQuakeCard(AegisData.Quake q, boolean big) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.HORIZONTAL);
         card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        card.setPadding(dp(12), dp(big ? 16 : 10), dp(12), dp(big ? 16 : 10));
         card.setBackground(cardBackground());
         card.setLayoutParams(cardParams());
 
         TextView badge = new TextView(this);
         badge.setText("震度" + AegisData.scaleToStr(q.maxScale));
         badge.setTextColor(Color.WHITE);
-        badge.setTextSize(13);
+        badge.setTextSize(big ? 17 : 13);
         badge.setTypeface(Typeface.DEFAULT_BOLD);
         badge.setGravity(Gravity.CENTER);
         GradientDrawable badgeBg = new GradientDrawable();
@@ -435,15 +594,26 @@ public class MainActivity extends Activity {
         TextView place = new TextView(this);
         place.setText(q.place);
         place.setTextColor(Color.WHITE);
-        place.setTextSize(15);
+        place.setTextSize(big ? 19 : 15);
         place.setTypeface(Typeface.DEFAULT_BOLD);
         TextView detail = new TextView(this);
         detail.setText(q.detail);
         detail.setTextColor(Color.parseColor("#9AA7BD"));
-        detail.setTextSize(12);
+        detail.setTextSize(big ? 14 : 12);
         detail.setPadding(0, dp(2), 0, 0);
         texts.addView(place);
         texts.addView(detail);
+        if (big) {
+            String elapsed = elapsedText(q.originMillis);
+            if (!elapsed.isEmpty()) {
+                TextView el = new TextView(this);
+                el.setText("⏱ " + elapsed);
+                el.setTextColor(Color.parseColor("#FFB454"));
+                el.setTextSize(13);
+                el.setPadding(0, dp(3), 0, 0);
+                texts.addView(el);
+            }
+        }
         texts.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         card.addView(texts);
         if (q.lat != 0 || q.lon != 0) {
@@ -478,6 +648,383 @@ public class MainActivity extends Activity {
         return Color.parseColor("#54687F");                  // 1: グレー青
     }
 
+    // ----- レーダータブ -----
+    private void loadRadar() {
+        stopEewTicker();
+        AegisData.Location[] locs = AegisData.effectiveLocations();
+        if (radarLocIndex >= locs.length) radarLocIndex = 0;
+        final AegisData.Location loc = locs[radarLocIndex];
+        renderRadarShell(locs);
+        status.setText("レーダーを取得中…（" + loc.name + "）");
+        final int gen = ++loadGeneration;
+        executor.execute(() -> {
+            try {
+                AegisData.RadarImage img = AegisData.radarImage(loc);
+                String now = new SimpleDateFormat("HH:mm:ss", Locale.JAPAN).format(new Date());
+                mainHandler.post(() -> {
+                    if (gen != loadGeneration || radarImageView == null) return;
+                    radarImageView.setImageBitmap(img.bitmap);
+                    radarCaptionView.setText(loc.name + " 周辺\n" + img.caption);
+                    status.setText("最終更新: " + now + "（レーダー）");
+                });
+            } catch (Exception e) {
+                String msg = "レーダーを取得できませんでした：" + AegisData.friendlyError(e);
+                mainHandler.post(() -> {
+                    if (gen != loadGeneration || radarCaptionView == null) return;
+                    radarCaptionView.setText(msg + "\n通信状態を確認して、更新ボタンで再試行してください。");
+                    status.setText("⚠ レーダーの取得に失敗しました");
+                });
+            }
+        });
+    }
+
+    // 地点切替チップ + 画像エリア + キャプションの枠を描く
+    private void renderRadarShell(AegisData.Location[] locs) {
+        clearContainer();
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.VERTICAL);
+        head.setPadding(dp(14), dp(12), dp(14), dp(12));
+        head.setBackground(cardBackground());
+        head.setLayoutParams(cardParams());
+        TextView title = new TextView(this);
+        title.setText("🌧 気象レーダー");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(15);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        head.addView(title);
+        LinearLayout chips = new LinearLayout(this);
+        chips.setOrientation(LinearLayout.HORIZONTAL);
+        chips.setPadding(0, dp(8), 0, 0);
+        for (int i = 0; i < locs.length; i++) {
+            final int idx = i;
+            Button chip = new Button(this);
+            chip.setText(locs[i].name);
+            chip.setTextSize(12);
+            if (i == radarLocIndex) chip.setTextColor(Color.parseColor("#FFB454"));
+            chip.setOnClickListener(v -> {
+                radarLocIndex = idx;
+                loadRadar();
+            });
+            chips.addView(chip);
+        }
+        android.widget.HorizontalScrollView scroll = new android.widget.HorizontalScrollView(this);
+        scroll.addView(chips);
+        head.addView(scroll);
+        container.addView(head);
+
+        radarImageView = new ImageView(this);
+        radarImageView.setAdjustViewBounds(true);
+        radarImageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        ip.bottomMargin = dp(8);
+        radarImageView.setLayoutParams(ip);
+        container.addView(radarImageView);
+
+        radarCaptionView = new TextView(this);
+        radarCaptionView.setText("読み込んでいます…");
+        radarCaptionView.setTextColor(Color.parseColor("#9AA7BD"));
+        radarCaptionView.setTextSize(12);
+        container.addView(radarCaptionView);
+    }
+
+    // ----- ニュースタブ -----
+    private void loadNews() {
+        stopEewTicker();
+        clearContainer();
+        TextView loading = new TextView(this);
+        loading.setText("ニュースを取得中…");
+        loading.setTextColor(Color.parseColor("#8A94A6"));
+        loading.setTextSize(14);
+        container.addView(loading);
+        status.setText("取得中…");
+        final int gen = ++loadGeneration;
+        executor.execute(() -> {
+            try {
+                List<AegisData.NewsItem> items = AegisData.newsItems();
+                String now = new SimpleDateFormat("HH:mm:ss", Locale.JAPAN).format(new Date());
+                mainHandler.post(() -> {
+                    if (gen != loadGeneration) return;
+                    renderNews(items);
+                    status.setText("最終更新: " + now + "（NHKニュース）");
+                });
+            } catch (Exception e) {
+                mainHandler.post(() -> {
+                    if (gen != loadGeneration) return;
+                    List<AegisData.Section> sections = new ArrayList<>();
+                    sections.add(new AegisData.Section("⚠ 取得エラー",
+                            "ニュースを取得できませんでした：" + AegisData.friendlyError(e) + "\n\n通信状態を確認してください。", "warn"));
+                    render(sections, new ArrayList<>());
+                    status.setText("⚠ ニュースの取得に失敗しました");
+                });
+            }
+        });
+    }
+
+    private void renderNews(List<AegisData.NewsItem> items) {
+        clearContainer();
+        TextView head = new TextView(this);
+        head.setText("📰 防災・主要ニュース（NHK）— タップで記事を開きます");
+        head.setTextColor(Color.parseColor("#8A94A6"));
+        head.setTextSize(12);
+        head.setPadding(0, 0, 0, dp(8));
+        container.addView(head);
+        for (AegisData.NewsItem n : items) {
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setPadding(dp(14), dp(12), dp(14), dp(12));
+            card.setBackground(cardBackground());
+            card.setLayoutParams(cardParams());
+            TextView title = new TextView(this);
+            title.setText((n.timeText.isEmpty() ? "" : n.timeText + "　") + n.title);
+            title.setTextColor(Color.WHITE);
+            title.setTextSize(15);
+            title.setTypeface(Typeface.DEFAULT_BOLD);
+            card.addView(title);
+            if (!n.summary.isEmpty()) {
+                TextView summary = new TextView(this);
+                summary.setText(n.summary);
+                summary.setTextColor(Color.parseColor("#D8DEE9"));
+                summary.setTextSize(13);
+                summary.setLineSpacing(0, 1.3f);
+                summary.setPadding(0, dp(5), 0, 0);
+                card.addView(summary);
+            }
+            card.setOnClickListener(v -> {
+                try {
+                    startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(n.link)));
+                } catch (Exception ignored) {
+                    status.setText("記事を開けませんでした");
+                }
+            });
+            container.addView(card);
+        }
+        if (items.isEmpty()) {
+            List<AegisData.Section> sections = new ArrayList<>();
+            sections.add(new AegisData.Section("📰 ニュース", "表示できるニュースがありません。", "info"));
+            render(sections, new ArrayList<>());
+        }
+    }
+
+    // ----- GPS 地点登録 -----
+    private static final int REQ_LOCATION = 1001;
+    private GpsListener gpsListener;
+    private final Runnable gpsTimeout = () -> {
+        if (gpsListener != null) {
+            gpsListener = null;
+            status.setText("現在地を取得できませんでした（タイムアウト）。電波の良い場所で再試行してください");
+        }
+    };
+
+    // LocationListener は名前付きクラスにする (匿名クラスは d8 が処理できないため)
+    private static class GpsListener implements android.location.LocationListener {
+        private final MainActivity activity;
+        GpsListener(MainActivity activity) { this.activity = activity; }
+        @Override public void onLocationChanged(android.location.Location location) {
+            activity.onGpsFix(location);
+        }
+        @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
+        @Override public void onProviderEnabled(String provider) {}
+        @Override public void onProviderDisabled(String provider) {}
+    }
+
+    private void onGpsClicked() {
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
+                && checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            status.setText("位置情報の許可が必要です");
+            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_LOCATION);
+            return;
+        }
+        fetchGpsLocation();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQ_LOCATION) return;
+        boolean granted = false;
+        for (int g : grantResults) if (g == PackageManager.PERMISSION_GRANTED) granted = true;
+        if (granted) fetchGpsLocation();
+        else status.setText("位置情報の許可が得られなかったため、現在地を登録できません");
+    }
+
+    private void fetchGpsLocation() {
+        status.setText("現在地を取得中…");
+        LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
+        if (lm == null) {
+            status.setText("位置情報サービスを利用できません");
+            return;
+        }
+        android.location.Location best = null;
+        try {
+            for (String p : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER}) {
+                android.location.Location l = lm.getLastKnownLocation(p);
+                if (l != null && (best == null || l.getTime() > best.getTime())) best = l;
+            }
+        } catch (SecurityException ignored) {}
+        if (best != null && System.currentTimeMillis() - best.getTime() < 10 * 60 * 1000L) {
+            onGpsFix(best);
+            return;
+        }
+        gpsListener = new GpsListener(this);
+        try {
+            if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                lm.requestSingleUpdate(LocationManager.GPS_PROVIDER, gpsListener, Looper.getMainLooper());
+            } else if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                lm.requestSingleUpdate(LocationManager.NETWORK_PROVIDER, gpsListener, Looper.getMainLooper());
+            } else {
+                gpsListener = null;
+                status.setText("位置情報が無効です。端末の設定で位置情報を有効にしてください");
+                return;
+            }
+        } catch (SecurityException e) {
+            gpsListener = null;
+            status.setText("位置情報の許可が得られなかったため、現在地を登録できません");
+            return;
+        }
+        mainHandler.postDelayed(gpsTimeout, 15000L);
+    }
+
+    private void onGpsFix(android.location.Location fix) {
+        mainHandler.removeCallbacks(gpsTimeout);
+        gpsListener = null;
+        final double lat = fix.getLatitude(), lon = fix.getLongitude();
+        final AegisData.Pref pref = AegisData.nearestPref(lat, lon);
+        status.setText("現在地を取得しました（都道府県は " + pref.name + " と推定）。地域を取得中…");
+        executor.execute(() -> {
+            List<String> names = new ArrayList<>();
+            try { names = AegisData.forecastAreaNames(pref.code); }
+            catch (Exception ignored) {}
+            List<String> result = names;
+            mainHandler.post(() -> {
+                if (result.isEmpty()) {
+                    status.setText("地域区分を取得できなかったため、現在地を登録できませんでした");
+                    return;
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle(pref.name + " の地域区分を選択")
+                        .setItems(result.toArray(new String[0]), (dialog, which) ->
+                                registerGpsLocation(pref, lat, lon, result.get(which)))
+                        .setNegativeButton("キャンセル", null)
+                        .show();
+            });
+        });
+    }
+
+    private void registerGpsLocation(AegisData.Pref pref, double lat, double lon, String areaName) {
+        List<AegisData.Location> list = new ArrayList<>(AegisData.customLocations);
+        list.add(new AegisData.Location("現在地（" + areaName + "）", lat, lon, pref.code, areaName));
+        AegisData.customLocations = list;
+        saveCustomLocations();
+        renderCustomList();
+        status.setText("現在地（" + areaName + " / " + pref.name + "）を登録しました。ブリーフィングに反映されます");
+    }
+
+    // ----- 接続テスト (自己診断) -----
+    private void runDiagnose() {
+        boolean serverMode = modeGroup.getCheckedRadioButtonId() == R.id.modeServer;
+        String server = serverUrlInput.getText().toString().trim();
+        status.setText("接続テスト中…（各データソースへ実際にリクエストしています）");
+        executor.execute(() -> {
+            List<String> lines = AegisData.diagnose(serverMode, server);
+            StringBuilder body = new StringBuilder();
+            int ok = 0;
+            for (String line : lines) {
+                if (line.startsWith("○")) ok++;
+                if (body.length() > 0) body.append("\n");
+                body.append(line);
+            }
+            String summary = ok + " / " + lines.size() + " 接続OK";
+            final boolean allOk = ok == lines.size();
+            final String resultBody = body.toString();
+            mainHandler.post(() -> {
+                List<AegisData.Section> sections = new ArrayList<>();
+                sections.add(new AegisData.Section("🩺 接続テスト結果（" + summary + "）", resultBody,
+                        allOk ? "ok" : "warn"));
+                render(sections, new ArrayList<>());
+                status.setText("接続テスト完了: " + summary);
+            });
+        });
+    }
+
+    // ----- テスト表示 (デモ) -----
+    private void enableDemo() {
+        demoMode = true;
+        long start = System.currentTimeMillis();
+        demoEew = buildDemoEew(start);
+        status.setText("テスト表示中（サンプルデータです。実際の警報ではありません）");
+        showTab("briefing");
+    }
+
+    private void disableDemo() {
+        demoMode = false;
+        demoEew = null;
+        status.setText("テスト表示を終了しました");
+        if ("briefing".equals(currentTab) || "quakes".equals(currentTab)) {
+            loadCurrent();
+        } else {
+            showTab("briefing");
+        }
+    }
+
+    // サンプル EEW: 発生は現在時刻、登録地点への到達は約30秒後 (カウントダウンが実際に動く)
+    private AegisData.EewInfo buildDemoEew(long start) {
+        AegisData.EewInfo info = new AegisData.EewInfo();
+        info.originMillis = start;
+        info.reportMillis = start;
+        info.hypoName = "テスト震源（サンプル）";
+        info.lat = 36.10;
+        info.lon = 139.30;
+        info.depth = 40;
+        info.estMaxScale = 45; // 推定最大震度 5弱
+        String arrival = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.JAPAN).format(new Date(start + 30 * 1000L));
+        info.areas.add(new AegisData.EewArea("群馬県", "群馬県南部", arrival));
+        info.areas.add(new AegisData.EewArea("埼玉県", "埼玉県南部", arrival));
+        return info;
+    }
+
+    private void renderDemo(String tab) {
+        stopEewTicker();
+        Button endBtn = new Button(this);
+        endBtn.setText("テスト表示を終了");
+        endBtn.setOnClickListener(v -> disableDemo());
+        if ("quakes".equals(tab)) {
+            List<AegisData.Section> sections = new ArrayList<>();
+            sections.add(demoBanner());
+            sections.add(new AegisData.Section("🌊 【テスト】津波情報", "津波の心配はありません（サンプル）。", "ok"));
+            List<AegisData.Quake> quakes = new ArrayList<>();
+            long now = System.currentTimeMillis();
+            quakes.add(new AegisData.Quake("テスト震源（サンプル）",
+                    new SimpleDateFormat("MM/dd HH:mm", Locale.JAPAN).format(new Date(now)) + "発生 / M5.8 / 深さ約40km / 津波の心配なし",
+                    "HIGH", 45, 36.10, 139.30, now));
+            quakes.add(new AegisData.Quake("サンプル震源2",
+                    new SimpleDateFormat("MM/dd HH:mm", Locale.JAPAN).format(new Date(now - 42 * 60000L)) + "発生 / M4.6 / 深さ約60km / 津波の心配なし",
+                    "MEDIUM", 30, 35.60, 140.10, now - 42 * 60000L));
+            renderQuakes(sections, quakes, demoEew, true);
+            container.addView(endBtn, 0);
+        } else {
+            List<AegisData.Section> sections = new ArrayList<>();
+            sections.add(demoBanner());
+            sections.add(new AegisData.Section("📌 【テスト】現在のまとめ",
+                    "⚠ 発表中：大雨警報\n🌊 津波: なし\n🌏 最新の地震: 震度5弱 テスト震源（サンプル）\n☀ 高崎: 雨", "warn"));
+            sections.add(new AegisData.Section("☀ 【テスト】天気予報（高崎）",
+                    "今日： 雨\n⚠ 発表中： 大雨警報（11/17 12:00発表）\n　大雨による土砂災害に警戒してください（サンプル文）。", "warn"));
+            sections.add(new AegisData.Section("🚨 【テスト】緊急地震速報",
+                    AegisData.eewStaticBody(demoEew), "danger"));
+            sections.add(new AegisData.Section("🌏 【テスト】最新の地震（1件）",
+                    "🟠 震度5弱 テスト震源（サンプル）", "info"));
+            render(sections, new ArrayList<>());
+            container.addView(endBtn, 0);
+        }
+        status.setText("テスト表示中（サンプルデータです。実際の警報ではありません）");
+    }
+
+    private AegisData.Section demoBanner() {
+        return new AegisData.Section("🧪 テスト表示中",
+                "これはサンプルデータです。実際の警報・地震ではありません。\n更新ボタンや自動更新で実際のデータに切り替わると、テスト表示は終了します。",
+                "warn");
+    }
+
     // 設定タブの接続テスト: 入力中のURLで /api/history を叩いて結果を表示する
     private void testServer() {
         String base = serverUrlInput.getText().toString().trim();
@@ -502,12 +1049,20 @@ public class MainActivity extends Activity {
         super.onResume();
         mainHandler.removeCallbacks(autoRefresh);
         mainHandler.postDelayed(autoRefresh, 5 * 60 * 1000L);
+        if ("quakes".equals(currentTab)) {
+            mainHandler.removeCallbacks(monitorTick);
+            mainHandler.postDelayed(monitorTick, 30 * 1000L);
+        }
+        if (currentEew != null && eewBodyView != null) startEewTicker();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         mainHandler.removeCallbacks(autoRefresh);
+        mainHandler.removeCallbacks(monitorTick);
+        mainHandler.removeCallbacks(eewTick);
+        mainHandler.removeCallbacks(gpsTimeout);
     }
 
     @Override
