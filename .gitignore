@@ -1,0 +1,15 @@
+# ===== Build =====
+.gradle/
+build/
+app/build/
+*.apk
+local.properties
+
+# ===== IDE =====
+.idea/
+*.iml
+.DS_Store
+
+# ===== Signing (debug keystore is generated under build/) =====
+*.keystore
+!debug.keystore

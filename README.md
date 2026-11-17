@@ -1,0 +1,75 @@
+# 🛡️ AEGIS Android クライアント
+
+地震・津波・気象 自律アシスタント **AEGIS** の Android アプリ（クライアント）です。
+Java で実装し、外部ライブラリ依存ゼロ（Android標準の `org.json` / `HttpURLConnection` のみ）。
+
+- パッケージ: `jp.aegis.client` / アプリ名: AEGIS
+- 対応: Android 8.0 (API 26) 以上、target API 34
+- 地点: 高崎（群馬）・大宮（埼玉）— PC版 AEGIS と同じ初期設定
+
+## 2つの動作モード
+
+### 1. 直接取得モード（既定・推奨）
+スマホ自体が公式ソースから直接取得します。PCサーバー不要で、どこでも使えます。
+- 地震・津波: P2P地震情報 API（気象庁データ）
+- 天気予報・警報: 気象庁 bosai
+- 現在の気象・降水確率: Open-Meteo
+
+### 2. AEGISサーバーモード（クライアントとして接続）
+PC等で動いている AEGIS の `serve`（Python版 / Java版どちらでも可）の `/api/briefing` に接続して表示します。
+設定タブでモードを切り替え、サーバーURLを入れて保存します。
+
+- 同じWi-FiのPC: `http://192.168.1.10:8765`（PCのLANアドレス）
+- AndroidエミュレータからPC: `http://10.0.2.2:8765`
+- ※ サーバーモード用に平文HTTPを許可しています（`usesCleartextTraffic`）。自宅LAN内での利用を想定しています
+
+## 画面
+- **ブリーフィング**: 高崎・大宮の天気/現在の気象/警報 + 津波情報 + 最新地震3件（サーバーモードではサーバーのブリーフィング）
+- **地震情報**: 最新15件の地震（震度・マグニチュード・深さ、重要度つき）+ 津波情報
+- **設定**: モード切替とサーバーURL（SharedPreferencesに保存）
+
+## インストール
+配布APK `aegis-client.apk` をスマホで開いてインストールします（デバッグ署名のため、初回は「提供元不明アプリ」の許可が必要な場合があります）。
+
+## リポジトリ
+https://github.com/i-mabu/aegis-android （Private）
+
+## ビルド方法
+
+### 方法A: オフライン手動ビルド（検証済み）
+Gradle/AGPを使わず、Android SDK のツールだけでAPKを作ります。
+```bash
+# 必要: JDK 17+ と Android SDK (platforms;android-34 / build-tools;34.0.0)
+ANDROID_SDK_ROOT=/path/to/android-sdk ./build-apk.sh
+# -> dist/aegis-client.apk (デバッグ署名)
+```
+手順は aapt2 compile/link → javac (--release 17) → d8 → zipalign → apksigner です。
+
+### 方法B: Gradle / Android Studio
+Android Studio でこのフォルダを開くか、コマンドラインで:
+```bash
+./gradlew assembleDebug   # 初回は Gradle 8.9 と AGP 8.7.3 のダウンロードが必要
+```
+- AGP 8.7.3 / compileSdk 34 / minSdk 26 / Java 17
+- `local.properties` に `sdk.dir=/path/to/android-sdk` を書いてください（git管理外）
+
+## 検証結果（2026-11-17）
+- ✅ 方法AでAPKビルド成功: `aegis-client.apk`（25KB）
+- ✅ `aapt2 dump badging`: package `jp.aegis.client`, versionCode 1 / versionName 1.0, minSdk 26, targetSdk 34, INTERNET権限, 起動Activity = MainActivity
+- ✅ `apksigner verify`: v2 / v3 スキームで検証OK
+- ⚠️ 実機での動作確認は未実施です（この環境には実機/エミュレータがありません）。スマホにインストールして、直接取得モードで最新情報が表示されるか確認してください。表示がおかしい場合は、スクリーンショットをもらえれば直します。
+
+## 構成
+```
+aegis-android/
+  README.md / build-apk.sh / build.gradle / settings.gradle / gradle.properties
+  app/
+    build.gradle
+    src/main/
+      AndroidManifest.xml
+      java/jp/aegis/client/
+        MainActivity.java   画面・タブ・設定保存
+        AegisData.java      取得と整形（P2P/気象庁/Open-Meteo/AEGISサーバー）
+      res/                  レイアウト・アイコン・文字列
+  dist/aegis-client.apk     ビルド済みAPK（デバッグ署名）
+```
