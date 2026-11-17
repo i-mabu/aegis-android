@@ -212,8 +212,26 @@ public class MainActivity extends Activity {
         status.setText("地点「" + name + "」を追加しました。ブリーフィングに反映されます");
     }
 
+    private int loadGeneration = 0; // 古い取得結果が新しい画面を上書きしないための世代番号
+
     private String cacheKey(String tab, String mode, String server) {
-        return "cache_" + tab + "_" + mode + "_" + (server == null ? "" : server.hashCode());
+        // 任意地点の構成が変わったら別キャッシュにする
+        int locSig = 0;
+        try { locSig = getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_CUSTOMS, "").hashCode(); } catch (Exception ignored) {}
+        return "cache_" + tab + "_" + mode + "_" + (server == null ? "" : server.hashCode()) + "_" + locSig;
+    }
+
+    // キャッシュの保存時刻 (HH:mm:ss)。無い/壊れている場合は null
+    private String cacheTime(String key) {
+        try {
+            String json = getSharedPreferences(PREFS, MODE_PRIVATE).getString(key, null);
+            if (json == null) return null;
+            long ts = new org.json.JSONObject(json).optLong("ts", 0);
+            if (ts <= 0) return null;
+            return new SimpleDateFormat("HH:mm:ss", Locale.JAPAN).format(new Date(ts));
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     // 前回の表示内容をキャッシュから復元する (体感速度の改善: まず表示して裏で更新)
@@ -261,7 +279,7 @@ public class MainActivity extends Activity {
             for (AegisData.Quake q : quakes) {
                 qa.put(new org.json.JSONObject().put("p", q.place).put("d", q.detail).put("s", q.sev).put("m", q.maxScale).put("la", q.lat).put("lo", q.lon));
             }
-            org.json.JSONObject root = new org.json.JSONObject().put("sections", sa).put("quakes", qa);
+            org.json.JSONObject root = new org.json.JSONObject().put("sections", sa).put("quakes", qa).put("ts", System.currentTimeMillis());
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(key, root.toString()).apply();
         } catch (Exception ignored) {}
     }
@@ -272,8 +290,10 @@ public class MainActivity extends Activity {
         String server = prefs.getString(KEY_SERVER, "http://10.0.2.2:8765");
         String tab = currentTab;
         String key = cacheKey(tab, mode, server);
+        final int gen = ++loadGeneration;
         boolean cached = renderCache(key);
-        status.setText(cached ? "キャッシュを表示中（更新中…）" : "取得中…");
+        String ct = cached ? cacheTime(key) : null;
+        status.setText(cached ? "キャッシュ" + (ct != null ? "（" + ct + "時点）" : "") + "を表示中（更新中…）" : "取得中…");
         if (!cached) {
             container.removeAllViews();
             TextView loading = new TextView(this);
@@ -308,10 +328,18 @@ public class MainActivity extends Activity {
             List<AegisData.Section> resultSections = sections;
             List<AegisData.Quake> resultQuakes = quakes;
             String now = new SimpleDateFormat("HH:mm:ss", Locale.JAPAN).format(new Date());
+            // 全セクションが取得失敗なら「最終更新」と表示しない (鮮度の誤認防止)
+            boolean allFailed = !resultSections.isEmpty();
+            for (AegisData.Section s : resultSections) {
+                if (!s.body.contains("取得できませんでした") && !s.title.contains("取得エラー")) { allFailed = false; break; }
+            }
+            final boolean failed = allFailed && resultQuakes.isEmpty();
             mainHandler.post(() -> {
+                if (gen != loadGeneration) return; // 既に新しい読み込みが始まっている
                 render(resultSections, resultQuakes);
                 saveCache(key, resultSections, resultQuakes);
-                status.setText("最終更新: " + now + "（" + ("server".equals(mode) ? "サーバー" : "直接取得") + "）");
+                status.setText(failed ? "⚠ 取得に失敗しました（通信状態を確認してください）"
+                        : "最終更新: " + now + "（" + ("server".equals(mode) ? "サーバー" : "直接取得") + "）");
             });
         });
     }
