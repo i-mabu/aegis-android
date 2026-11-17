@@ -44,7 +44,7 @@ object AegisData {
             try {
                 conn.connectTimeout = 10000
                 conn.readTimeout = 20000
-                conn.setRequestProperty("User-Agent", "AEGIS-Android/1.6")
+                conn.setRequestProperty("User-Agent", "AEGIS-Android/1.7")
                 conn.setRequestProperty("Accept", "application/json")
                 conn.setRequestProperty("Accept-Encoding", "gzip")
                 val code = conn.responseCode
@@ -1119,7 +1119,7 @@ object AegisData {
         try {
             conn.connectTimeout = 10000
             conn.readTimeout = 15000
-            conn.setRequestProperty("User-Agent", "AEGIS-Android/1.6")
+            conn.setRequestProperty("User-Agent", "AEGIS-Android/1.7")
             if (conn.responseCode != 200) throw IllegalStateException("HTTP " + conn.responseCode)
             var ins: java.io.InputStream = conn.inputStream
             if ("gzip".equals(conn.contentEncoding, ignoreCase = true)) ins = java.util.zip.GZIPInputStream(ins)
