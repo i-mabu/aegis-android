@@ -343,25 +343,213 @@ public final class AegisData {
         WMO.put("77", "雪あられ"); WMO.put("85", "雪"); WMO.put("86", "雪"); WMO.put("96", "雹を伴う雷雨"); WMO.put("99", "雹を伴う雷雨");
     }
 
-    public static String weatherText(Location loc) {
-        // 気象庁予報を先に取得する: 予報テキストに加え、警報の地域判定に使う
-        // 「一次細分区域コード」をこのJSONから得る (警報JSONの areas は名称を持たずコードのみのため)
-        String[] fc = forecastPart(loc); // [0]=予報テキスト [1]=細分区域コード (失敗時 "")
-        java.util.concurrent.Future<String> f2 = FETCH_POOL.submit(() -> currentPart(loc));
-        java.util.concurrent.Future<String> f3 = FETCH_POOL.submit(() -> warningPart(loc, fc[1]));
-        StringBuilder sb = new StringBuilder();
-        sb.append(fc[0]);
-        try { sb.append(f2.get(50, java.util.concurrent.TimeUnit.SECONDS)); }
-        catch (Exception e) { sb.append("（現在の気象を取得できませんでした）\n"); }
-        try { sb.append(f3.get(50, java.util.concurrent.TimeUnit.SECONDS)); }
-        catch (Exception ignored) {}
-        return sb.toString();
+    // ----- 表表示用の行データ (純粋ビルダーで組み立てる) -----
+    // 時間別予報の1行
+    public static final class HourRow {
+        public final String date, weekday, emoji, desc;
+        public final int hour, pop; // pop: -1 は不明
+        public final long temp;
+        public HourRow(String date, String weekday, int hour, String emoji, String desc, long temp, int pop) {
+            this.date = date; this.weekday = weekday; this.hour = hour;
+            this.emoji = emoji; this.desc = desc; this.temp = temp; this.pop = pop;
+        }
     }
 
-    // 気象庁予報: [予報テキスト, 一次細分区域コード] を返す
-    private static String[] forecastPart(Location loc) {
-        StringBuilder sb = new StringBuilder();
+    // 週間予報の1行
+    public static final class DayRow {
+        public final String date, weekday, emoji, desc;
+        public final long minTemp, maxTemp;
+        public final int pop; // 降水確率最大: -1 は不明
+        public DayRow(String date, String weekday, String emoji, String desc, long minTemp, long maxTemp, int pop) {
+            this.date = date; this.weekday = weekday; this.emoji = emoji; this.desc = desc;
+            this.minTemp = minTemp; this.maxTemp = maxTemp; this.pop = pop;
+        }
+    }
+
+    // 気象庁 降水確率 (6時間刻み) の1行
+    public static final class PopRow {
+        public final String date, weekday;
+        public final int fromHour, toHour, pop; // pop: -1 は不明
+        public PopRow(String date, String weekday, int fromHour, int toHour, int pop) {
+            this.date = date; this.weekday = weekday;
+            this.fromHour = fromHour; this.toHour = toHour; this.pop = pop;
+        }
+    }
+
+    // ISO日付 "2026-11-18" → 曜日1文字 ("日"〜"土")。解釈できなければ ""
+    public static String weekdayJa(String isoDate) {
+        try {
+            String[] p = isoDate.split("-");
+            java.util.Calendar cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Tokyo"));
+            cal.clear();
+            cal.set(Integer.parseInt(p[0]), Integer.parseInt(p[1]) - 1, Integer.parseInt(p[2]));
+            int dow = cal.get(java.util.Calendar.DAY_OF_WEEK); // 1=日 〜 7=土
+            return "日月火水木金土".substring(dow - 1, dow);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    // 時間別予報の行データを組み立てる (現在時刻以降・3時間刻み・最大12件)
+    public static java.util.List<HourRow> buildHourRows(String[] times, double[] temps, double[] pops, int[] codes,
+                                                        long nowMillis, java.util.TimeZone tz) {
+        java.util.List<HourRow> out = new java.util.ArrayList<>();
+        if (times == null) return out;
+        java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH", java.util.Locale.JAPAN);
+        fmt.setTimeZone(tz);
+        String nowIso = fmt.format(new java.util.Date(nowMillis));
+        for (int i = 0; i < times.length && out.size() < 12; i++) {
+            String t = times[i];
+            if (t == null || t.length() < 13) continue;
+            if (t.substring(0, 13).compareTo(nowIso) < 0) continue; // 過去の時間帯は出さない
+            int hour;
+            try { hour = Integer.parseInt(t.substring(11, 13)); } catch (Exception e) { continue; }
+            if (hour % 3 != 0) continue;
+            double pop = pops != null && i < pops.length ? pops[i] : -1;
+            int code = codes != null && i < codes.length ? codes[i] : -1;
+            double temp = temps != null && i < temps.length ? temps[i] : 0;
+            String dateIso = t.substring(0, 10);
+            out.add(new HourRow(dateIso.substring(5).replace('-', '/'), weekdayJa(dateIso), hour,
+                    forecastEmoji(code, pop, hour), WMO.getOrDefault(String.valueOf(code), "不明"),
+                    Math.round(temp), pop < 0 ? -1 : (int) Math.round(pop)));
+        }
+        return out;
+    }
+
+    // 週間予報の行データを組み立てる
+    public static java.util.List<DayRow> buildDayRows(String[] dates, int[] codes, double[] maxs, double[] mins, double[] pops) {
+        java.util.List<DayRow> out = new java.util.ArrayList<>();
+        if (dates == null) return out;
+        for (int i = 0; i < dates.length; i++) {
+            String t = dates[i];
+            if (t == null || t.length() < 10) continue;
+            int code = codes != null && i < codes.length ? codes[i] : -1;
+            double pop = pops != null && i < pops.length ? pops[i] : -1;
+            double mx = maxs != null && i < maxs.length ? maxs[i] : 0;
+            double mn = mins != null && i < mins.length ? mins[i] : 0;
+            String dateIso = t.substring(0, 10);
+            out.add(new DayRow(dateIso.substring(5).replace('-', '/'), weekdayJa(dateIso),
+                    forecastEmoji(code, pop, 12), WMO.getOrDefault(String.valueOf(code), "不明"),
+                    Math.round(mn), Math.round(mx), pop < 0 ? -1 : (int) Math.round(pop)));
+        }
+        return out;
+    }
+
+    // 気象庁 降水確率 (6時間刻み) の行データを組み立てる (最大6件)
+    public static java.util.List<PopRow> buildPopRows(String[] timeDefines, String[] pops) {
+        java.util.List<PopRow> out = new java.util.ArrayList<>();
+        if (timeDefines == null || pops == null) return out;
+        for (int i = 0; i < timeDefines.length && i < pops.length && out.size() < 6; i++) {
+            String def = timeDefines[i]; // 2026-11-17T12:00:00+09:00
+            if (def == null || def.length() < 13) continue;
+            int hour;
+            try { hour = Integer.parseInt(def.substring(11, 13)); } catch (Exception e) { continue; }
+            int pop = -1;
+            try { pop = Integer.parseInt(pops[i].trim()); } catch (Exception ignored) {}
+            String dateIso = def.substring(0, 10);
+            out.add(new PopRow(dateIso.substring(5).replace('-', '/'), weekdayJa(dateIso), hour, (hour + 6) % 24, pop));
+        }
+        return out;
+    }
+
+    // 「ラベル：値」形式のテキストを [ラベル, 値] の組に分解する (ラベル列を揃えた行表示用)
+    // 区切りがない行・ラベルが長すぎる行は [行全体, ""] を返す
+    public static java.util.List<String[]> summaryRows(String body) {
+        java.util.List<String[]> out = new java.util.ArrayList<>();
+        if (body == null) return out;
+        for (String line : body.split("\n")) {
+            String s = line.trim();
+            if (s.isEmpty()) continue;
+            int idx = s.indexOf('：');
+            if (idx < 0) idx = s.indexOf(": ");
+            if (idx > 0 && idx <= 12) out.add(new String[]{s.substring(0, idx), s.substring(idx + 1).trim()});
+            else out.add(new String[]{s, ""});
+        }
+        return out;
+    }
+
+    private static String[] jsonStrings(JSONArray a) {
+        if (a == null) return new String[0];
+        String[] out = new String[a.length()];
+        for (int i = 0; i < a.length(); i++) out[i] = a.optString(i);
+        return out;
+    }
+
+    private static double[] jsonDoubles(JSONArray a, double def) {
+        if (a == null) return new double[0];
+        double[] out = new double[a.length()];
+        for (int i = 0; i < a.length(); i++) out[i] = a.optDouble(i, def);
+        return out;
+    }
+
+    private static int[] jsonInts(JSONArray a) {
+        if (a == null) return new int[0];
+        int[] out = new int[a.length()];
+        for (int i = 0; i < a.length(); i++) out[i] = a.optInt(i);
+        return out;
+    }
+
+    // 天気カードの構造化データ (テキスト全文 + 表の行データ)
+    public static final class WeatherView {
+        public final Location loc;
+        public final String text;         // 従来のテキスト全文 (まとめ生成・キャッシュ用)
+        public final String daysText;     // 今日/明日/明後日の天気文
+        public final String tempsText;    // 気温行
+        public final String currentText;  // 現在の気象 (+傘アドバイス)
+        public final String tomorrowText; // 明日 (Open-Meteo)
+        public final String warningText;  // 警報テキスト (なければ "")
+        public final java.util.List<PopRow> popRows;
+        public final java.util.List<HourRow> hourRows;
+        public final java.util.List<DayRow> dayRows;
+        public final String level;        // info | warn | danger
+        public WeatherView(Location loc, String text, String daysText, String tempsText, String currentText,
+                           String tomorrowText, String warningText, java.util.List<PopRow> popRows,
+                           java.util.List<HourRow> hourRows, java.util.List<DayRow> dayRows, String level) {
+            this.loc = loc; this.text = text; this.daysText = daysText; this.tempsText = tempsText;
+            this.currentText = currentText; this.tomorrowText = tomorrowText; this.warningText = warningText;
+            this.popRows = popRows; this.hourRows = hourRows; this.dayRows = dayRows; this.level = level;
+        }
+    }
+
+    public static WeatherView weatherView(Location loc) {
+        // 気象庁予報を先に取得する: 予報テキストに加え、警報の地域判定に使う
+        // 「一次細分区域コード」をこのJSONから得る (警報JSONの areas は名称を持たずコードのみのため)
+        ForecastPart fp = forecastData(loc);
+        java.util.concurrent.Future<CurrentPart> f2 = FETCH_POOL.submit(() -> currentData(loc));
+        java.util.concurrent.Future<String> f3 = FETCH_POOL.submit(() -> warningPart(loc, fp.areaCode));
+        CurrentPart cp;
+        try { cp = f2.get(50, java.util.concurrent.TimeUnit.SECONDS); }
+        catch (Exception e) {
+            cp = new CurrentPart();
+            cp.text = "（現在の気象を取得できませんでした）\n";
+            cp.currentText = "（現在の気象を取得できませんでした）";
+        }
+        String warn = "";
+        try { warn = f3.get(50, java.util.concurrent.TimeUnit.SECONDS); }
+        catch (Exception ignored) {}
+        String text = fp.text + cp.text + warn;
+        String level = text.contains("特別警報") ? "danger" : text.contains("発表中") ? "warn" : "info";
+        return new WeatherView(loc, text, fp.daysText, fp.tempsText, cp.currentText, cp.tomorrowText,
+                warn.trim(), fp.popRows, cp.hourRows, cp.dayRows, level);
+    }
+
+    public static String weatherText(Location loc) {
+        return weatherView(loc).text;
+    }
+
+    // 気象庁予報の構造化データ
+    private static final class ForecastPart {
+        String text = "";
+        String daysText = "";
+        String tempsText = "";
         String areaCode = "";
+        java.util.List<PopRow> popRows = new java.util.ArrayList<>();
+    }
+
+    private static ForecastPart forecastData(Location loc) {
+        ForecastPart fp = new ForecastPart();
+        StringBuilder sb = new StringBuilder();
+        StringBuilder days = new StringBuilder();
         try {
             JSONArray arr = new JSONArray(fetch("https://www.jma.go.jp/bosai/forecast/data/forecast/" + loc.prefCode + ".json"));
             JSONObject first = arr.getJSONObject(0);
@@ -376,13 +564,13 @@ public final class AegisData {
             }
             if (chosen == null && areas.length() > 0) chosen = areas.getJSONObject(0);
             if (chosen != null) {
-                areaCode = chosen.getJSONObject("area").optString("code");
+                fp.areaCode = chosen.getJSONObject("area").optString("code");
                 JSONArray weathers = chosen.getJSONArray("weathers");
-                sb.append("今日： ").append(cleanWeather(weathers.optString(0)));
-                if (weathers.length() > 1) sb.append("\n明日： ").append(cleanWeather(weathers.optString(1)));
-                if (weathers.length() > 2) sb.append("\n明後日： ").append(cleanWeather(weathers.optString(2)));
-                sb.append("\n");
-                if (!matched) sb.append("（※地域名が一致しないため、県内の先頭地域の予報を表示しています）\n");
+                days.append("今日： ").append(cleanWeather(weathers.optString(0)));
+                if (weathers.length() > 1) days.append("\n明日： ").append(cleanWeather(weathers.optString(1)));
+                if (weathers.length() > 2) days.append("\n明後日： ").append(cleanWeather(weathers.optString(2)));
+                if (!matched) days.append("\n（※地域名が一致しないため、県内の先頭地域の予報を表示しています）");
+                sb.append(days).append("\n");
             }
             // 降水確率 (timeSeries[1]: 6時間ごとの pops) — 細分区域コードで照合
             for (int s = 0; s < series.length(); s++) {
@@ -393,26 +581,25 @@ public final class AegisData {
                 JSONObject pa = null;
                 for (int i = 0; i < tas.length(); i++) {
                     JSONObject a = tas.getJSONObject(i);
-                    if (areaCode.equals(a.getJSONObject("area").optString("code"))) { pa = a; break; }
+                    if (fp.areaCode.equals(a.getJSONObject("area").optString("code"))) { pa = a; break; }
                 }
                 if (pa == null) pa = tas.getJSONObject(0);
                 JSONArray pops = pa.optJSONArray("pops");
                 JSONArray defs = ts.optJSONArray("timeDefines");
                 if (pops != null && defs != null) {
-                    StringBuilder pb = new StringBuilder("降水確率： ");
-                    int shown = 0;
-                    String prevDate = "";
-                    for (int i = 0; i < pops.length() && shown < 6; i++) {
-                        String def = defs.optString(i); // 2026-11-17T12:00:00+09:00
-                        if (def.length() < 13) continue;
-                        int hour = Integer.parseInt(def.substring(11, 13));
-                        String date = def.substring(5, 10).replace('-', '/'); // 11/17
-                        if (shown > 0) pb.append(" / ");
-                        if (!date.equals(prevDate)) { pb.append(date).append(" "); prevDate = date; }
-                        pb.append(hour).append("〜").append((hour + 6) % 24).append("時 ").append(pops.optString(i)).append("%");
-                        shown++;
+                    fp.popRows = buildPopRows(jsonStrings(defs), jsonStrings(pops));
+                    if (!fp.popRows.isEmpty()) {
+                        StringBuilder pb = new StringBuilder("降水確率： ");
+                        String prevDate = "";
+                        for (int i = 0; i < fp.popRows.size(); i++) {
+                            PopRow r = fp.popRows.get(i);
+                            if (i > 0) pb.append(" / ");
+                            if (!r.date.equals(prevDate)) { pb.append(r.date).append(" "); prevDate = r.date; }
+                            pb.append(r.fromHour).append("〜").append(r.toHour).append("時 ")
+                              .append(r.pop < 0 ? "-" : String.valueOf(r.pop)).append("%");
+                        }
+                        sb.append(pb).append("\n");
                     }
-                    sb.append(pb).append("\n");
                 }
                 break;
             }
@@ -426,16 +613,19 @@ public final class AegisData {
                 JSONArray temps = ta.optJSONArray("temps");
                 if (temps != null && temps.length() >= 4) {
                     String city = ta.getJSONObject("area").optString("name");
-                    sb.append("気温（").append(city).append("）： 今日 ")
-                      .append(temps.optString(0)).append("〜").append(temps.optString(1)).append("℃ / 明日 ")
-                      .append(temps.optString(2)).append("〜").append(temps.optString(3)).append("℃\n");
+                    fp.tempsText = "気温（" + city + "）： 今日 "
+                            + temps.optString(0) + "〜" + temps.optString(1) + "℃ / 明日 "
+                            + temps.optString(2) + "〜" + temps.optString(3) + "℃";
+                    sb.append(fp.tempsText).append("\n");
                 }
                 break;
             }
         } catch (Exception e) {
             sb.append("（天気予報を取得できませんでした：").append(friendlyError(e)).append("）\n");
         }
-        return new String[]{sb.toString(), areaCode};
+        fp.text = sb.toString();
+        fp.daysText = days.length() > 0 ? days.toString() : fp.text.trim();
+        return fp;
     }
 
     // 予報用絵文字: 天気コード + 降水確率 + 時刻から選ぶ (純粋関数)
@@ -471,7 +661,17 @@ public final class AegisData {
         }
     }
 
-    private static String currentPart(Location loc) {
+    // Open-Meteo の構造化データ
+    private static final class CurrentPart {
+        String text = "";
+        String currentText = "";
+        String tomorrowText = "";
+        java.util.List<HourRow> hourRows = new java.util.ArrayList<>();
+        java.util.List<DayRow> dayRows = new java.util.ArrayList<>();
+    }
+
+    private static CurrentPart currentData(Location loc) {
+        CurrentPart cp = new CurrentPart();
         StringBuilder sb = new StringBuilder();
         // Open-Meteo: 現在・時間別・日別(7日) を1リクエストで統合取得する
         try {
@@ -485,100 +685,101 @@ public final class AegisData {
             JSONObject daily = root.getJSONObject("daily");
             String desc = WMO.getOrDefault(String.valueOf(cur.optInt("weather_code")), "不明");
             double pop = daily.getJSONArray("precipitation_probability_max").optDouble(0, -1);
-            sb.append("現在：").append(desc).append(" ").append(cur.optDouble("temperature_2m")).append("℃ / 風 ")
+            StringBuilder curText = new StringBuilder();
+            curText.append("現在：").append(desc).append(" ").append(cur.optDouble("temperature_2m")).append("℃ / 風 ")
               .append(cur.optDouble("wind_speed_10m")).append("km/h / 今日 ")
               .append(daily.getJSONArray("temperature_2m_min").optDouble(0)).append("〜")
               .append(daily.getJSONArray("temperature_2m_max").optDouble(0)).append("℃ / 降水確率 最大")
-              .append(pop < 0 ? "?" : String.valueOf((long) pop)).append("%\n");
-            if (pop >= 80) sb.append("▶ 降水確率が高め。大きめの傘が安心です\n");
+              .append(pop < 0 ? "?" : String.valueOf((long) pop)).append("%");
+            if (pop >= 80) curText.append("\n▶ 降水確率が高め。大きめの傘が安心です");
+            cp.currentText = curText.toString();
+            sb.append(cp.currentText).append("\n");
             // 明日の気温・降水確率 (Open-Meteo daily[1])
             JSONArray dCodes = daily.optJSONArray("weather_code");
             if (dCodes != null && dCodes.length() > 1) {
                 double pop2 = daily.getJSONArray("precipitation_probability_max").optDouble(1, -1);
-                sb.append("明日（Open-Meteo）: ").append(WMO.getOrDefault(String.valueOf(dCodes.optInt(1)), "不明")).append(" ")
-                  .append(daily.getJSONArray("temperature_2m_min").optDouble(1)).append("〜")
-                  .append(daily.getJSONArray("temperature_2m_max").optDouble(1)).append("℃ / 降水確率 最大")
-                  .append(pop2 < 0 ? "?" : String.valueOf((long) pop2)).append("%\n");
+                cp.tomorrowText = "明日（Open-Meteo）: " + WMO.getOrDefault(String.valueOf(dCodes.optInt(1)), "不明") + " "
+                        + daily.getJSONArray("temperature_2m_min").optDouble(1) + "〜"
+                        + daily.getJSONArray("temperature_2m_max").optDouble(1) + "℃ / 降水確率 最大"
+                        + (pop2 < 0 ? "?" : String.valueOf((long) pop2)) + "%";
+                sb.append(cp.tomorrowText).append("\n");
             }
             // 時間別 (今日の残り + 明日を3時間刻み)
             JSONObject hourly = root.optJSONObject("hourly");
             if (hourly != null) {
+                cp.hourRows = hourRowsFromJson(hourly);
                 String h = hourlyText(hourly);
                 if (!h.isEmpty()) sb.append(h);
             }
-            // 週間予報 (daily 7日を1〜2行に)
+            // 週間予報 (daily 7日)
+            cp.dayRows = dayRowsFromJson(daily);
             String w = weeklyText(daily);
             if (!w.isEmpty()) sb.append(w);
         } catch (Exception e) {
             sb.append("（現在の気象を取得できませんでした：").append(friendlyError(e)).append("）\n");
+            cp.currentText = sb.toString().trim();
         }
+        cp.text = sb.toString();
+        return cp;
+    }
+
+    private static java.util.List<HourRow> hourRowsFromJson(JSONObject hourly) {
+        if (hourly == null) return new java.util.ArrayList<>();
+        JSONArray times = hourly.optJSONArray("time");
+        JSONArray temps = hourly.optJSONArray("temperature_2m");
+        JSONArray codes = hourly.optJSONArray("weather_code");
+        if (times == null || temps == null || codes == null) return new java.util.ArrayList<>();
+        return buildHourRows(jsonStrings(times), jsonDoubles(temps, 0),
+                jsonDoubles(hourly.optJSONArray("precipitation_probability"), -1), jsonInts(codes),
+                System.currentTimeMillis(), java.util.TimeZone.getDefault());
+    }
+
+    private static java.util.List<DayRow> dayRowsFromJson(JSONObject daily) {
+        if (daily == null) return new java.util.ArrayList<>();
+        JSONArray times = daily.optJSONArray("time");
+        JSONArray codes = daily.optJSONArray("weather_code");
+        JSONArray maxs = daily.optJSONArray("temperature_2m_max");
+        JSONArray mins = daily.optJSONArray("temperature_2m_min");
+        if (times == null || codes == null || maxs == null || mins == null) return new java.util.ArrayList<>();
+        return buildDayRows(jsonStrings(times), jsonInts(codes), jsonDoubles(maxs, 0), jsonDoubles(mins, 0),
+                jsonDoubles(daily.optJSONArray("precipitation_probability_max"), -1));
+    }
+
+    // 時間別予報: 行データから従来のテキスト形式に整形する (テキスト表示・キャッシュ用)
+    public static String hourlyText(JSONObject hourly) {
+        java.util.List<HourRow> rows = hourRowsFromJson(hourly);
+        if (rows.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder("時間別： ");
+        String prevDate = "";
+        for (int i = 0; i < rows.size(); i++) {
+            HourRow r = rows.get(i);
+            if (!r.date.equals(prevDate)) {
+                if (i > 0) sb.append("\n　");
+                sb.append(r.date).append(" ");
+                prevDate = r.date;
+            } else if (i > 0) {
+                sb.append(" / ");
+            }
+            sb.append(r.hour).append("時 ").append(r.emoji).append(r.temp).append("℃");
+            if (r.pop >= 0) sb.append(" 降水").append(r.pop).append("%");
+        }
+        sb.append("\n");
         return sb.toString();
     }
 
-    // 時間別予報: 現在時刻以降、今日の残り+明日分を3時間刻みでコンパクトに整形する
-    public static String hourlyText(JSONObject hourly) {
-        try {
-            JSONArray times = hourly.optJSONArray("time");
-            JSONArray temps = hourly.optJSONArray("temperature_2m");
-            JSONArray pops = hourly.optJSONArray("precipitation_probability");
-            JSONArray codes = hourly.optJSONArray("weather_code");
-            if (times == null || temps == null || codes == null) return "";
-            String nowIso = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH", java.util.Locale.JAPAN).format(new java.util.Date());
-            StringBuilder sb = new StringBuilder("時間別： ");
-            String prevDate = "";
-            int shown = 0;
-            for (int i = 0; i < times.length() && shown < 12; i++) {
-                String t = times.optString(i); // 2026-11-17T15:00
-                if (t.length() < 13) continue;
-                if (t.substring(0, 13).compareTo(nowIso) < 0) continue; // 過去の時間帯は出さない
-                int hour = Integer.parseInt(t.substring(11, 13));
-                if (hour % 3 != 0) continue;
-                String date = t.substring(5, 10).replace('-', '/'); // 11/17
-                if (!date.equals(prevDate)) {
-                    if (shown > 0) sb.append("\n　");
-                    sb.append(date).append(" ");
-                    prevDate = date;
-                } else if (shown > 0) {
-                    sb.append(" / ");
-                }
-                double p = pops != null ? pops.optDouble(i, -1) : -1;
-                sb.append(hour).append("時 ").append(forecastEmoji(codes.optInt(i), p, hour))
-                  .append(Math.round(temps.optDouble(i))).append("℃");
-                if (p >= 0) sb.append(" 降水").append(Math.round(p)).append("%");
-                shown++;
-            }
-            if (shown == 0) return "";
-            sb.append("\n");
-            return sb.toString();
-        } catch (Exception e) {
-            return "";
-        }
-    }
-
-    // 週間予報: daily (7日) を「週間: 11/18 ☀ 9〜21℃ / …」形式に整形する
+    // 週間予報: 行データから従来のテキスト形式に整形する (テキスト表示・キャッシュ用)
     public static String weeklyText(JSONObject daily) {
-        try {
-            JSONArray times = daily.optJSONArray("time");
-            JSONArray codes = daily.optJSONArray("weather_code");
-            JSONArray maxs = daily.optJSONArray("temperature_2m_max");
-            JSONArray mins = daily.optJSONArray("temperature_2m_min");
-            JSONArray pops = daily.optJSONArray("precipitation_probability_max");
-            if (times == null || codes == null || maxs == null || mins == null || times.length() == 0) return "";
-            StringBuilder sb = new StringBuilder("週間： ");
-            for (int i = 0; i < times.length(); i++) {
-                String t = times.optString(i); // 2026-11-18
-                if (t.length() < 10) continue;
-                if (i > 0) sb.append(" / ");
-                double p = pops != null ? pops.optDouble(i, -1) : -1;
-                sb.append(t.substring(5, 10).replace('-', '/')).append(" ")
-                  .append(forecastEmoji(codes.optInt(i), p, 12)).append(" ")
-                  .append(Math.round(mins.optDouble(i))).append("〜").append(Math.round(maxs.optDouble(i))).append("℃");
-            }
-            sb.append("\n");
-            return sb.toString();
-        } catch (Exception e) {
-            return "";
+        java.util.List<DayRow> rows = dayRowsFromJson(daily);
+        if (rows.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder("週間： ");
+        for (int i = 0; i < rows.size(); i++) {
+            DayRow r = rows.get(i);
+            if (i > 0) sb.append(" / ");
+            sb.append(r.date).append(" ").append(r.emoji).append(" ")
+              .append(r.minTemp).append("〜").append(r.maxTemp).append("℃");
         }
+        sb.append("\n");
+        return sb.toString();
     }
 
     // 警報・注意報: 警報JSONの areas は名称を持たず「一次細分区域コード」のみのため、
@@ -658,8 +859,22 @@ public final class AegisData {
         return sb.toString();
     }
 
-    // カードUI用: 天気・津波・地震をすべて並列取得し、表示順に組み立てる
+    // ブリーフィング一式: セクション (テキスト) + 天気の構造化データ (表表示用)
+    // sections の並びは [まとめ, 天気×地点数, 津波, (台風), (EEW), 地震] で、weathers は天気分と同順
+    public static final class Briefing {
+        public final java.util.List<Section> sections;
+        public final java.util.List<WeatherView> weathers;
+        public Briefing(java.util.List<Section> sections, java.util.List<WeatherView> weathers) {
+            this.sections = sections; this.weathers = weathers;
+        }
+    }
+
     public static java.util.List<Section> briefingSections() {
+        return briefing().sections;
+    }
+
+    // カードUI用: 天気・津波・地震をすべて並列取得し、表示順に組み立てる
+    public static Briefing briefing() {
         java.util.List<Section> out = new java.util.ArrayList<>();
         Location[] locs = effectiveLocations();
         java.util.concurrent.Future<String> tsunamiF = FETCH_POOL.submit(() -> tsunamiText());
@@ -667,18 +882,22 @@ public final class AegisData {
         java.util.concurrent.Future<String> eewF = FETCH_POOL.submit(() -> eewText());
         java.util.concurrent.Future<java.util.List<Quake>> quakesF = FETCH_POOL.submit(() -> quakeItems(3));
         java.util.List<Section> weatherSections = new java.util.ArrayList<>();
+        java.util.List<WeatherView> weatherViews = new java.util.ArrayList<>();
         {
-            java.util.List<java.util.concurrent.Future<String>> futures = new java.util.ArrayList<>();
+            java.util.List<java.util.concurrent.Future<WeatherView>> futures = new java.util.ArrayList<>();
             for (Location loc : locs) {
                 final Location l = loc;
-                futures.add(FETCH_POOL.submit(() -> weatherText(l)));
+                futures.add(FETCH_POOL.submit(() -> weatherView(l)));
             }
             for (int i = 0; i < locs.length; i++) {
-                String body;
-                try { body = futures.get(i).get(90, java.util.concurrent.TimeUnit.SECONDS); }
-                catch (Exception e) { body = "（天気を取得できませんでした）"; }
-                String level = body.contains("特別警報") ? "danger" : body.contains("発表中") ? "warn" : "info";
-                weatherSections.add(new Section("☀ 天気予報（" + locs[i].name + "）", body.trim(), level));
+                WeatherView view;
+                try { view = futures.get(i).get(90, java.util.concurrent.TimeUnit.SECONDS); }
+                catch (Exception e) {
+                    view = new WeatherView(locs[i], "（天気を取得できませんでした）", "（天気を取得できませんでした）",
+                            "", "", "", "", new java.util.ArrayList<>(), new java.util.ArrayList<>(), new java.util.ArrayList<>(), "warn");
+                }
+                weatherViews.add(view);
+                weatherSections.add(new Section("☀ 天気予報（" + locs[i].name + "）", view.text.trim(), view.level));
             }
         }
         boolean tsunamiAlert = false;
@@ -722,7 +941,7 @@ public final class AegisData {
             out.add(new Section("🌏 最新の地震", "取得できませんでした：" + friendlyError(e), "warn"));
         }
         out.add(0, summarize(weatherSections, tsunamiAlert, qsForSummary));
-        return out;
+        return new Briefing(out, weatherViews);
     }
 
     // 一括で把握するための先頭まとめカード (警報・津波・最新地震・今日の天気を凝縮)

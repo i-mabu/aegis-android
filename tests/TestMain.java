@@ -170,6 +170,69 @@ public class TestMain {
         check("🌨".equals(AegisData.forecastEmoji(71, 90, 12)), "forecastEmoji snow code unchanged");
         check("⛈".equals(AegisData.forecastEmoji(95, 20, 12)), "forecastEmoji thunder unchanged");
 
+        // ----- 表表示の行データ (純粋ビルダー) -----
+        // 曜日 (2026-11-17 は火曜、11/15 は日曜)
+        check("火".equals(AegisData.weekdayJa("2026-11-17")), "weekdayJa tue");
+        check("日".equals(AegisData.weekdayJa("2026-11-15")), "weekdayJa sun");
+        check("水".equals(AegisData.weekdayJa("2026-11-18")), "weekdayJa wed");
+        check("".equals(AegisData.weekdayJa("invalid")), "weekdayJa invalid -> empty");
+
+        // 時間別: 過去と3時間刻みでないものを除き、降水86%の深夜は雨系絵文字になる
+        java.util.TimeZone tzJst = java.util.TimeZone.getTimeZone("Asia/Tokyo");
+        java.util.Calendar nowCal = java.util.Calendar.getInstance(tzJst);
+        nowCal.set(2026, java.util.Calendar.NOVEMBER, 17, 13, 0, 0);
+        nowCal.set(java.util.Calendar.MILLISECOND, 0);
+        java.util.List<AegisData.HourRow> hourRows = AegisData.buildHourRows(
+                new String[]{"2026-11-17T12:00", "2026-11-17T15:00", "2026-11-17T16:00", "2026-11-18T03:00"},
+                new double[]{10, 12, 13, 9},
+                new double[]{10, 20, 30, 86},
+                new int[]{0, 1, 61, 0},
+                nowCal.getTimeInMillis(), tzJst);
+        check(hourRows.size() == 2, "buildHourRows filters past and non-3h");
+        check(hourRows.get(0).hour == 15 && "11/17".equals(hourRows.get(0).date) && "火".equals(hourRows.get(0).weekday),
+                "buildHourRows first row date/weekday");
+        check("☀".equals(hourRows.get(0).emoji) && hourRows.get(0).temp == 12 && hourRows.get(0).pop == 20,
+                "buildHourRows first row values");
+        check(hourRows.get(1).hour == 3 && "11/18".equals(hourRows.get(1).date) && "水".equals(hourRows.get(1).weekday),
+                "buildHourRows second row next day");
+        check("🌦".equals(hourRows.get(1).emoji) && hourRows.get(1).pop == 86,
+                "buildHourRows pop86 clear code -> rain emoji");
+
+        // 週間: 降水確率最大 50% 以上で雨系を優先、気温は丸める
+        java.util.List<AegisData.DayRow> dayRows = AegisData.buildDayRows(
+                new String[]{"2026-11-17", "2026-11-18"},
+                new int[]{0, 0},
+                new double[]{21.4, 18.2},
+                new double[]{9.3, 8.1},
+                new double[]{10, 86});
+        check(dayRows.size() == 2, "buildDayRows size");
+        check("☀".equals(dayRows.get(0).emoji) && dayRows.get(0).maxTemp == 21 && dayRows.get(0).minTemp == 9
+                && dayRows.get(0).pop == 10, "buildDayRows first row");
+        check("🌦".equals(dayRows.get(1).emoji) && dayRows.get(1).pop == 86 && "水".equals(dayRows.get(1).weekday),
+                "buildDayRows rainy day emoji");
+
+        // 気象庁 降水確率: 時間帯の繰り上げと、空値は不明 (-1)
+        java.util.List<AegisData.PopRow> popRows = AegisData.buildPopRows(
+                new String[]{"2026-11-17T12:00:00+09:00", "2026-11-17T18:00:00+09:00", "2026-11-18T00:00:00+09:00"},
+                new String[]{"30", "", "50"});
+        check(popRows.size() == 3, "buildPopRows size");
+        check(popRows.get(0).fromHour == 12 && popRows.get(0).toHour == 18 && popRows.get(0).pop == 30
+                && "11/17".equals(popRows.get(0).date), "buildPopRows first row");
+        check(popRows.get(1).fromHour == 18 && popRows.get(1).toHour == 0 && popRows.get(1).pop == -1,
+                "buildPopRows wraps midnight, empty -> -1");
+        check("11/18".equals(popRows.get(2).date) && "水".equals(popRows.get(2).weekday) && popRows.get(2).pop == 50,
+                "buildPopRows next day");
+
+        // ラベル：値 の分解 (全角/半角コロン、区切りなし、長すぎるラベルは分解しない)
+        java.util.List<String[]> srows = AegisData.summaryRows("⚠ 発表中：大雨警報\n🌊 津波: なし\n注記のみの行");
+        check(srows.size() == 3, "summaryRows size");
+        check("⚠ 発表中".equals(srows.get(0)[0]) && "大雨警報".equals(srows.get(0)[1]), "summaryRows fullwidth colon");
+        check("🌊 津波".equals(srows.get(1)[0]) && "なし".equals(srows.get(1)[1]), "summaryRows ascii colon");
+        check("注記のみの行".equals(srows.get(2)[0]) && srows.get(2)[1].isEmpty(), "summaryRows no separator");
+        java.util.List<String[]> longLabel = AegisData.summaryRows("（天気予報を取得できませんでした：通信エラー）");
+        check(longLabel.size() == 1 && longLabel.get(0)[1].isEmpty(), "summaryRows long label not split");
+        check(AegisData.summaryRows("").isEmpty() && AegisData.summaryRows(null).isEmpty(), "summaryRows empty");
+
         System.out.println("ALL TESTS PASSED (" + passed + ")");
     }
 }

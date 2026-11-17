@@ -418,6 +418,7 @@ public class MainActivity extends Activity {
             List<AegisData.Section> sections = new ArrayList<>();
             List<AegisData.Quake> quakes = new ArrayList<>();
             AegisData.EewInfo fetchedEew = null;
+            AegisData.Briefing fetchedBriefing = null;
             try {
                 if ("quakes".equals(tab) && !"server".equals(mode)) {
                     sections.addAll(AegisData.quakesSections(false));
@@ -429,7 +430,9 @@ public class MainActivity extends Activity {
                 } else if ("server".equals(mode)) {
                     sections.addAll(AegisData.serverSections(server));
                 } else {
-                    sections.addAll(AegisData.briefingSections());
+                    AegisData.Briefing b = AegisData.briefing();
+                    fetchedBriefing = b;
+                    sections.addAll(b.sections);
                 }
             } catch (Exception e) {
                 sections.clear();
@@ -442,6 +445,7 @@ public class MainActivity extends Activity {
             List<AegisData.Section> resultSections = sections;
             List<AegisData.Quake> resultQuakes = quakes;
             AegisData.EewInfo resultEew = fetchedEew;
+            AegisData.Briefing resultBriefing = fetchedBriefing;
             String now = new SimpleDateFormat("HH:mm:ss", Locale.JAPAN).format(new Date());
             // 全セクションが取得失敗なら「最終更新」と表示しない (鮮度の誤認防止)
             boolean allFailed = !resultSections.isEmpty();
@@ -451,7 +455,9 @@ public class MainActivity extends Activity {
             final boolean failed = allFailed && resultQuakes.isEmpty();
             mainHandler.post(() -> {
                 if (gen != loadGeneration) return; // 既に新しい読み込みが始まっている
-                if ("quakes".equals(tab) && !"server".equals(mode)) {
+                if (resultBriefing != null) {
+                    renderBriefing(resultBriefing);
+                } else if ("quakes".equals(tab) && !"server".equals(mode)) {
                     renderQuakes(resultSections, resultQuakes, resultEew, false);
                 } else {
                     render(resultSections, resultQuakes);
@@ -556,7 +562,8 @@ public class MainActivity extends Activity {
         return bg;
     }
 
-    private View makeCard(AegisData.Section s) {
+    // カードの外枠 (タイトル行つき) を作る
+    private LinearLayout cardShell(String title, String level) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(14), dp(12), dp(14), dp(12));
@@ -568,18 +575,22 @@ public class MainActivity extends Activity {
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView dot = new TextView(this);
         dot.setText("●");
-        dot.setTextColor(levelColor(s.level));
+        dot.setTextColor(levelColor(level));
         dot.setTextSize(11);
         dot.setPadding(0, 0, dp(8), 0);
-        TextView title = new TextView(this);
-        title.setText(s.title);
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(15);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
+        TextView titleView = new TextView(this);
+        titleView.setText(title);
+        titleView.setTextColor(Color.WHITE);
+        titleView.setTextSize(15);
+        titleView.setTypeface(Typeface.DEFAULT_BOLD);
         titleRow.addView(dot);
-        titleRow.addView(title);
+        titleRow.addView(titleView);
         card.addView(titleRow);
+        return card;
+    }
 
+    private View makeCard(AegisData.Section s) {
+        LinearLayout card = cardShell(s.title, s.level);
         TextView body = new TextView(this);
         body.setText(s.body);
         body.setTextColor(Color.parseColor("#D8DEE9"));
@@ -588,6 +599,175 @@ public class MainActivity extends Activity {
         body.setPadding(0, dp(6), 0, 0);
         card.addView(body);
         return card;
+    }
+
+    // ----- 表形式の描画ヘルパー -----
+    // ラベル列を揃えた [ラベル | 値] 行。値が空の行は注記として小さく全文表示する
+    private View labelValueRow(String label, String value, int labelWidthDp, boolean alt) {
+        if (value == null || value.isEmpty()) {
+            TextView note = new TextView(this);
+            note.setText(label);
+            note.setTextColor(Color.parseColor("#9AA7BD"));
+            note.setTextSize(12);
+            note.setPadding(dp(2), dp(3), dp(2), dp(3));
+            return note;
+        }
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(dp(2), dp(4), dp(2), dp(4));
+        if (alt) row.setBackgroundColor(Color.parseColor("#212C42"));
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextColor(Color.parseColor("#9AA7BD"));
+        l.setTextSize(13);
+        l.setTypeface(Typeface.DEFAULT_BOLD);
+        l.setLayoutParams(new LinearLayout.LayoutParams(dp(labelWidthDp), LinearLayout.LayoutParams.WRAP_CONTENT));
+        row.addView(l);
+        TextView v = new TextView(this);
+        v.setText(value);
+        v.setTextColor(Color.parseColor("#D8DEE9"));
+        v.setTextSize(13);
+        v.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(v);
+        return row;
+    }
+
+    // 「ラベル：値」テキストをラベル列を揃えた行の集まりとしてカードに追加する
+    private void addLabelRows(LinearLayout card, String text, int labelWidthDp) {
+        if (text == null || text.isEmpty()) return;
+        List<String[]> rows = AegisData.summaryRows(text);
+        for (int i = 0; i < rows.size(); i++) {
+            card.addView(labelValueRow(rows.get(i)[0], rows.get(i)[1], labelWidthDp, i % 2 == 1));
+        }
+    }
+
+    // 表の1行 (widths: dp指定、0 は残り幅いっぱいの可変列)。ヘッダー行と交互背景に対応
+    private View tableRow(String[] cells, int[] widths, boolean header, int rowIndex) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(8), dp(5), dp(8), dp(5));
+        row.setBackgroundColor(header ? Color.parseColor("#2A3852")
+                : (rowIndex % 2 == 0 ? Color.parseColor("#1B2436") : Color.parseColor("#232F4B")));
+        for (int i = 0; i < cells.length; i++) {
+            TextView tv = new TextView(this);
+            tv.setText(cells[i]);
+            tv.setTextSize(13);
+            tv.setTextColor(header ? Color.WHITE : Color.parseColor("#D8DEE9"));
+            if (header) tv.setTypeface(Typeface.DEFAULT_BOLD);
+            if (widths[i] > 0) {
+                tv.setLayoutParams(new LinearLayout.LayoutParams(dp(widths[i]), LinearLayout.LayoutParams.WRAP_CONTENT));
+            } else {
+                tv.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            }
+            row.addView(tv);
+        }
+        return row;
+    }
+
+    // 表内の日付見出し行
+    private View dateHeaderRow(String date, String weekday) {
+        TextView tv = new TextView(this);
+        tv.setText("📅 " + date + (weekday.isEmpty() ? "" : "（" + weekday + "）"));
+        tv.setTextColor(Color.parseColor("#FFB454"));
+        tv.setTextSize(12);
+        tv.setTypeface(Typeface.DEFAULT_BOLD);
+        tv.setPadding(dp(2), dp(8), dp(2), dp(3));
+        return tv;
+    }
+
+    // 表の小見出し
+    private View tableSubheading(String text) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextColor(Color.parseColor("#9AA7BD"));
+        tv.setTextSize(12);
+        tv.setTypeface(Typeface.DEFAULT_BOLD);
+        tv.setPadding(dp(2), dp(10), dp(2), dp(4));
+        return tv;
+    }
+
+    private static final int[] POP_COLS = {110, 0};
+    private static final int[] HOUR_COLS = {52, 0, 56, 62};
+    private static final int[] DAY_COLS = {92, 0, 88, 62};
+
+    // 「📌 現在のまとめ」カード (ラベル列を揃えた行レイアウト)
+    private View makeSummaryCard(AegisData.Section s) {
+        LinearLayout card = cardShell(s.title, s.level);
+        List<String[]> rows = AegisData.summaryRows(s.body);
+        for (int i = 0; i < rows.size(); i++) {
+            card.addView(labelValueRow(rows.get(i)[0], rows.get(i)[1], 108, i % 2 == 1));
+        }
+        return card;
+    }
+
+    // 天気カード (ラベル行 + 時間別/週間/降水確率の表)
+    private View makeWeatherCard(AegisData.WeatherView w) {
+        LinearLayout card = cardShell("☀ 天気予報（" + w.loc.name + "）", w.level);
+        addLabelRows(card, w.daysText, 84);
+        addLabelRows(card, w.tempsText, 84);
+        if (!w.popRows.isEmpty()) {
+            card.addView(tableSubheading("降水確率（気象庁・6時間ごと）"));
+            card.addView(tableRow(new String[]{"時間帯", "降水確率"}, POP_COLS, true, 0));
+            String prevDate = "";
+            int idx = 0;
+            for (AegisData.PopRow r : w.popRows) {
+                if (!r.date.equals(prevDate)) {
+                    card.addView(dateHeaderRow(r.date, r.weekday));
+                    prevDate = r.date;
+                }
+                card.addView(tableRow(new String[]{r.fromHour + "〜" + r.toHour + "時",
+                        r.pop < 0 ? "-%" : r.pop + "%"}, POP_COLS, false, idx++));
+            }
+        }
+        addLabelRows(card, w.currentText, 84);
+        addLabelRows(card, w.tomorrowText, 84);
+        if (!w.hourRows.isEmpty()) {
+            card.addView(tableSubheading("時間別予報（3時間ごと）"));
+            card.addView(tableRow(new String[]{"時刻", "天気", "気温", "降水"}, HOUR_COLS, true, 0));
+            String prevDate = "";
+            int idx = 0;
+            for (AegisData.HourRow r : w.hourRows) {
+                if (!r.date.equals(prevDate)) {
+                    card.addView(dateHeaderRow(r.date, r.weekday));
+                    prevDate = r.date;
+                }
+                card.addView(tableRow(new String[]{r.hour + "時", r.emoji + " " + r.desc,
+                        r.temp + "℃", r.pop < 0 ? "-%" : r.pop + "%"}, HOUR_COLS, false, idx++));
+            }
+        }
+        if (!w.dayRows.isEmpty()) {
+            card.addView(tableSubheading("週間予報"));
+            card.addView(tableRow(new String[]{"日付", "天気", "気温", "降水"}, DAY_COLS, true, 0));
+            int idx = 0;
+            for (AegisData.DayRow r : w.dayRows) {
+                card.addView(tableRow(new String[]{r.date + (r.weekday.isEmpty() ? "" : "（" + r.weekday + "）"),
+                        r.emoji + " " + r.desc, r.minTemp + "〜" + r.maxTemp + "℃",
+                        r.pop < 0 ? "-%" : r.pop + "%"}, DAY_COLS, false, idx++));
+            }
+        }
+        if (!w.warningText.isEmpty()) {
+            TextView warn = new TextView(this);
+            warn.setText(w.warningText);
+            warn.setTextColor(Color.parseColor("#FFB454"));
+            warn.setTextSize(13);
+            warn.setLineSpacing(0, 1.3f);
+            warn.setPadding(0, dp(8), 0, 0);
+            card.addView(warn);
+        }
+        return card;
+    }
+
+    // ブリーフィング (直接取得) の描画: まとめ=ラベル行、天気=表、それ以外は通常カード
+    private void renderBriefing(AegisData.Briefing b) {
+        clearContainer();
+        stopEewTicker();
+        List<AegisData.Section> sections = b.sections;
+        if (!sections.isEmpty()) container.addView(makeSummaryCard(sections.get(0)));
+        for (AegisData.WeatherView w : b.weathers) container.addView(makeWeatherCard(w));
+        for (int i = 1 + b.weathers.size(); i < sections.size(); i++) {
+            container.addView(makeCard(sections.get(i)));
+        }
     }
 
     private View makeQuakeCard(AegisData.Quake q, boolean big) {
