@@ -10,12 +10,15 @@ Kotlin で実装。データ取得・整形は Android 標準 API（`org.json` /
 ## 🔀 2つの動作モード
 
 ### 📡 1. 直接取得モード（既定・推奨）
+
 スマホ自体が公式ソースから直接取得します。PCサーバー不要で、どこでも使えます。
+
 - 地震・津波: P2P地震情報 API（気象庁データ）
 - 天気予報・警報: 気象庁 bosai
 - 現在の気象・降水確率: Open-Meteo
 
 ### 🖥️ 2. AEGISサーバーモード（クライアントとして接続）
+
 PC等で動いている AEGIS の `serve`（Python版 / Java版どちらでも可）の `/api/briefing` に接続して表示します。
 設定タブでモードを切り替え、サーバーURLを入れて保存します。
 
@@ -24,6 +27,7 @@ PC等で動いている AEGIS の `serve`（Python版 / Java版どちらでも�
 - ※ サーバーモード用に平文HTTPを許可しています（`usesCleartextTraffic`）。自宅LAN内での利用を想定しています
 
 ## 📱 画面
+
 - **ブリーフィング**: 高崎・大宮の天気/現在の気象/警報 + 津波情報 + 台風情報（あるときのみ）+ 最新地震3件（サーバーモードではサーバーのブリーフィング）
 - **地震**: 地震モニター（表示中30秒ごとに自動更新）。最新の地震を拡大表示し、緊急地震速報が新鮮な間は到達カウントダウンカードを最上部に固定表示 + 津波情報
 - **レーダー**: RainViewer レーダー + 地理院地図（地点切替チップつき、5分自動更新）
@@ -31,21 +35,27 @@ PC等で動いている AEGIS の `serve`（Python版 / Java版どちらでも�
 - **設定**: モード切替とサーバーURL（SharedPreferencesに保存）、地点追加、GPS地点登録、接続テスト（自己診断）、テスト表示（デモ）、バックグラウンド同期と通知（間隔・しきい値・朝夕ブリーフィング・通知テスト）
 
 ## 📦 インストール
+
 配布APK `aegis-client.apk` をスマホで開いてインストールします（デバッグ署名のため、初回は「提供元不明アプリ」の許可が必要な場合があります）。
 
 ## 📂 リポジトリ
+
 https://github.com/i-mabu/aegis-android （Private）
 
 ## 🔨 ビルド方法
 
 ### 🔨 方法A: オフライン手動ビルド（検証済み）
+
 Gradle/AGPを使わず、Android SDK のツールだけでAPKを作ります。ワンコマンドで単体テスト → ビルド → 署名まで実行し、最後に成果物のパス・サイズ・sha256 を表示します。
+
 ```bash
 # 必要: JDK 17+ と Android SDK (platforms;android-34 / build-tools;34.0.0)
 ./build-apk.sh
 # -> dist/aegis-client.apk (デバッグ署名)
 ```
+
 リリース署名でビルドする場合（キーストア情報は環境変数でのみ渡し、スクリプトやリポジトリには書きません）:
+
 ```bash
 RELEASE_KEYSTORE=/path/to/release.keystore \
 RELEASE_KEYSTORE_PASS=... \
@@ -53,18 +63,23 @@ RELEASE_KEY_ALIAS=... \
 ./build-apk.sh release
 # -> dist/aegis-client-release.apk
 ```
+
 手順は 単体テスト（tests/run-tests.sh、111件）→ aapt2 compile（アプリとライブラリ AAR の res すべて）/ link（`--auto-add-overlay` と、R.txt を持つ AAR への `--extra-packages`）→ kotlinc + Compose コンパイラプラグイン（Maven 版 `kotlin-compose-compiler-plugin`、aapt2 生成の R.java は javac）→ 単体 R8 による D8（マルチデックス、kotlin-stdlib.jar を同梱）→ zipalign → apksigner です。依存ライブラリ（Compose 1.7.6 / material3 1.3.1 など）は `libs/` に置き、`tools/resolve.py` で再解決できます。Kotlin コンパイラは `KOTLINC` 環境変数 → `~/workspace/tools/kotlin` → PATH の順に探します。SDK の場所は `ANDROID_SDK_ROOT` / `ANDROID_HOME` で上書きできます。
 ビルドは bash スクリプトです（build.bat はありません）。Windows では WSL 上で実行してください。
 
 ### 🛠️ 方法B: Gradle / Android Studio
+
 Android Studio でこのフォルダを開くか、コマンドラインで:
+
 ```bash
 ./gradlew assembleDebug   # 初回は Gradle 8.9 と AGP 8.7.3 のダウンロードが必要
 ```
+
 - AGP 8.7.3 / compileSdk 34 / minSdk 26 / Java 17
 - `local.properties` に `sdk.dir=/path/to/android-sdk` を書いてください（git管理外）
 
 ## ✅ 検証結果（2026-11-18）
+
 - ✅ 単体テスト 111件 全パス（tests/run-tests.sh）
 - ✅ 方法AでAPKビルド成功: `dist/aegis-client.apk`（8,070,184 bytes、sha256 `3f2b97e4a6c01773a266d0a6d71d47544823a6ea73ccd9d531d8044a3103e823`、デバッグ署名）
 - ✅ `aapt2 dump badging`: package `jp.aegis.client`, versionCode 13 / versionName 1.8.0, minSdk 26, targetSdk 34, INTERNET権限, 起動Activity = MainActivity
@@ -72,6 +87,7 @@ Android Studio でこのフォルダを開くか、コマンドラインで:
 - ⚠️ 実機での動作確認は未実施です（この環境には実機/エミュレータがありません）。スマホにインストールして、直接取得モードで最新情報が表示されるか確認してください。表示がおかしい場合は、スクリーンショットをもらえれば直します。
 
 ## 🗂️ 構成
+
 ```
 aegis-android/
   README.md / build-apk.sh / build.gradle / settings.gradle / gradle.properties
@@ -90,6 +106,7 @@ aegis-android/
 ```
 
 ## 📝 v1.1 の変更点（2026-11-17）
+
 - 警報・注意報の詳細表示: 見出し文だけでなく、発表中の名称一覧（コード表から復元）を表示
 - 自動更新: アプリ表示中は5分ごとに自動で再取得（設定タブ表示中は除く）
 - 接続テスト: 設定タブにボタン追加。入力中のサーバーURLへ /api/history で疎通確認
@@ -98,6 +115,7 @@ aegis-android/
   - ⚠ v1.0 のAPKとは署名が異なるため、v1.1 の初回インストール時は v1.0 をアンインストールしてください（v1.1 以降は上書き更新できます）
 
 ## 📝 v1.2 の変更点（2026-11-17、実機スクリーンショットを受けて）
+
 - デザイン刷新: テキスト表示をやめ、カードUIに変更（セクションごとのカード＋重要度カラーのドット）
 - 地震情報は震度バッジ付きカードで表示（震度で色分け）。[INFO] 等のタグ表記と区切り線を廃止
 - エラー表示を日本語化: 「Read timed out」等の生メッセージを出さず「通信がタイムアウトしました」等に変換
@@ -106,12 +124,14 @@ aegis-android/
 - v1.1 と署名が同じため、v1.1 からは上書きインストールできます
 
 ## 📝 v1.3 の変更点（2026-11-17、取得の軽量化）
+
 - 全並列化: 天気の3要素（予報・現在・警報）を地点内でも並列取得に変更（従来は地点間並列＋地点内は直列）
 - gzip対応: 応答を圧縮転送し、気象庁JSONなどの転送量を削減
 - キャッシュ表示: 前回表示した内容を保存し、起動時はまずキャッシュを即表示→裏で最新に更新
 - リトライをUI向けに調整: 最大2回にし、タイムアウトも短めに（待ち時間の暴走防止）
 
 ## 📝 v1.3 の追加変更（実用性向上）
+
 - ブリーフィング先頭に「📌 現在のまとめ」カード（発表中の警報・注意報／津波の有無／最新の地震／今日の天気を一括表示）
 - 地震詳細の拡充: 津波の見通しを日本語で明示、最大震度を観測した地点名、地元震度（群馬・埼玉）を表示
 - 地震カードに「🗺 地図」ボタン（震源を地図アプリ／OpenStreetMapで表示）
