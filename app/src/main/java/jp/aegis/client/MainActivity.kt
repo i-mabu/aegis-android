@@ -1092,6 +1092,7 @@ Text("↻", fontSize = 13.sp)
 }
 }
 
+// セクションの重要度 (level) → カードのドット色 (未知の level は標準色)
 private fun levelColor(level: String?): Color {
 return when (level?: "") {
 "danger" -> Color(0xFFFF6B6B)
@@ -1326,6 +1327,7 @@ modifier = Modifier.padding(top = 6.dp)
 }
 }
 
+// 地震カード (big=true のときは地震モニター先頭の拡大表示: 経過時間と大きな震度バッジつき)
 @Composable
 private fun QuakeCard(q: AegisData.Quake, big: Boolean) {
 Row(
@@ -1460,6 +1462,7 @@ modifier = Modifier.padding(top = 5.dp)
 }
 
     // ----- 設定パネル -----
+    // 設定パネル共通の小さな部品 (ラジオ選択肢と1行テキスト入力)
     @Composable
     private fun RadioOption(label: String, selected: Boolean, onClick: () -> Unit) {
         Row(

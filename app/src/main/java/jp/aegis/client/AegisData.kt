@@ -37,7 +37,7 @@ object AegisData {
 
     // ----- 1.1 HTTP -----
     fun fetch(urlStr: String): String {
-        // UI表示用: リトライは最大2回まで (待ち時間の暴走を防ぐ)。gzip で転送量も削減する
+        // 共通のテキスト取得 (画面表示・バックグラウンド同期・自己診断で共用): 試行は最大2回まで (待ち時間の暴走を防ぐ)。gzip で転送量も削減する
         var last: Exception? = null
         for (attempt in 0 until 2) {
             val conn = URL(urlStr).openConnection() as HttpURLConnection
@@ -459,6 +459,7 @@ object AegisData {
         return out
     }
 
+    // JSONArray → 配列変換の小ヘルパー群 (null の場合は空の配列を返す)
     private fun jsonStrings(a: JSONArray?): Array<String> {
         if (a == null) return arrayOf()
         return Array(a.length()) { i -> a.optString(i) }
@@ -1114,6 +1115,7 @@ object AegisData {
         return Math.max(0, Math.min(n - 1, y))
     }
 
+    // バイナリ用取得 (レーダータイル等の画像): fetch と違いテキスト化せず、リトライもしない
     fun fetchBytes(urlStr: String): ByteArray {
         val conn = URL(urlStr).openConnection() as HttpURLConnection
         try {
@@ -1439,6 +1441,7 @@ object AegisData {
         return s.substring(0, maxLen) + "…"
     }
 
+    // NHK RSS (XML) をプルパーサで走査し、<item> ごとに NewsItem を作る (解析に失敗した場合は途中までの結果を返す)
     private fun parseRss(xml: String): MutableList<NewsItem> {
         val out = ArrayList<NewsItem>()
         try {

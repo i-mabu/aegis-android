@@ -127,6 +127,7 @@ object AegisSync {
     }
 
     // ----- 通知の投稿 -----
+    // イベント1件を通知として投稿する (タップで該当タブを開く。通知IDと PendingIntent の要求コードにはイベントIDのハッシュを使う)
     fun notifyEvent(ctx: Context, ev: AegisData.SyncEvent) {
         ensureChannels(ctx)
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager? ?: return
@@ -198,6 +199,7 @@ object AegisSync {
         scheduleBriefing(ctx, false)
     }
 
+    // 朝夕ブリーフィングの片方 (朝=7:00 / 夕=21:00) の次回を予約する
     fun scheduleBriefing(ctx: Context, morning: Boolean) {
         val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager? ?: return
         if (!isBriefingEnabled(ctx)) return
