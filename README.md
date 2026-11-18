@@ -1,7 +1,7 @@
 # 🛡️ AEGIS Android クライアント
 
 地震・津波・気象 自律アシスタント **AEGIS** の Android アプリ（クライアント）です。
-Kotlin で実装し、外部ライブラリ依存ゼロ（Android標準の `org.json` / `HttpURLConnection` のみ。Kotlin 標準ライブラリは APK に同梱）。
+Kotlin で実装。データ取得・整形は Android 標準 API（`org.json` / `HttpURLConnection`）のみで外部ライブラリを使わず、UI は Jetpack Compose（Compose / Material3 を `libs/` に解決して同梱）。Kotlin 標準ライブラリも APK に同梱します。
 
 - パッケージ: `jp.aegis.client` / アプリ名: AEGIS
 - 対応: Android 8.0 (API 26) 以上、target API 34
@@ -64,9 +64,10 @@ Android Studio でこのフォルダを開くか、コマンドラインで:
 - AGP 8.7.3 / compileSdk 34 / minSdk 26 / Java 17
 - `local.properties` に `sdk.dir=/path/to/android-sdk` を書いてください（git管理外）
 
-## ✅ 検証結果（2026-11-17）
-- ✅ 方法AでAPKビルド成功: `aegis-client.apk`（25KB）
-- ✅ `aapt2 dump badging`: package `jp.aegis.client`, versionCode 1 / versionName 1.0, minSdk 26, targetSdk 34, INTERNET権限, 起動Activity = MainActivity
+## ✅ 検証結果（2026-11-18）
+- ✅ 単体テスト 111件 全パス（tests/run-tests.sh）
+- ✅ 方法AでAPKビルド成功: `dist/aegis-client.apk`（8,070,184 bytes、sha256 `3f2b97e4a6c01773a266d0a6d71d47544823a6ea73ccd9d531d8044a3103e823`、デバッグ署名）
+- ✅ `aapt2 dump badging`: package `jp.aegis.client`, versionCode 13 / versionName 1.8.0, minSdk 26, targetSdk 34, INTERNET権限, 起動Activity = MainActivity
 - ✅ `apksigner verify`: v2 / v3 スキームで検証OK
 - ⚠️ 実機での動作確認は未実施です（この環境には実機/エミュレータがありません）。スマホにインストールして、直接取得モードで最新情報が表示されるか確認してください。表示がおかしい場合は、スクリーンショットをもらえれば直します。
 
@@ -79,13 +80,13 @@ aegis-android/
     src/main/
       AndroidManifest.xml
       java/jp/aegis/client/
-        MainActivity.java   画面・タブ・設定保存
-        AegisData.java      取得と整形（P2P/気象庁/Open-Meteo/AEGISサーバー）
-        AegisSync.java      バックグラウンド同期と通知（設定・スケジュール・通知投稿）
-        SyncReceiver.java   AlarmManager の受け口（定期同期・朝夕ブリーフィング）
-        BootReceiver.java   再起動後の予約復旧
-      res/                  レイアウト・アイコン・文字列
-  dist/aegis-client.apk     ビルド済みAPK（デバッグ署名）
+        MainActivity.kt   画面・タブ・設定保存
+        AegisData.kt      取得と整形（P2P/気象庁/Open-Meteo/AEGISサーバー）
+        AegisSync.kt      バックグラウンド同期と通知（設定・スケジュール・通知投稿）
+        SyncReceiver.kt   AlarmManager の受け口（定期同期・朝夕ブリーフィング）
+        BootReceiver.kt   再起動後の予約復旧
+      res/                  アイコン・文字列リソース
+  dist/                     ビルド成果物（aegis-client.apk）の出力先（git管理外）
 ```
 
 ## 📝 v1.1 の変更点（2026-11-17）

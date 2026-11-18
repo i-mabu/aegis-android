@@ -44,7 +44,7 @@ object AegisData {
             try {
                 conn.connectTimeout = 10000
                 conn.readTimeout = 20000
-                conn.setRequestProperty("User-Agent", "AEGIS-Android/1.7")
+                conn.setRequestProperty("User-Agent", "AEGIS-Android/1.8")
                 conn.setRequestProperty("Accept", "application/json")
                 conn.setRequestProperty("Accept-Encoding", "gzip")
                 val code = conn.responseCode
@@ -206,17 +206,6 @@ object AegisData {
             out.add(Quake(hypo.optString("name", "不明"), detail, severityOf(maxScale, mag), maxScale, lat, lon, parseP2pTime(time), item.optString("id")))
         }
         return out
-    }
-
-    fun earthquakesText(limit: Int): String {
-        val items = quakeItems(limit)
-        if (items.isEmpty()) return "最近の地震情報はありません。\n"
-        val sb = StringBuilder()
-        for (q in items) {
-            sb.append(severityEmoji(q.sev)).append(" 震度").append(scaleToStr(q.maxScale)).append(" ").append(q.place)
-                .append("\n").append(q.detail).append("\n")
-        }
-        return sb.toString()
     }
 
     fun tsunamiText(): String {
@@ -510,10 +499,6 @@ object AegisData {
         val level = if (text.contains("特別警報")) "danger" else if (text.contains("発表中")) "warn" else "info"
         return WeatherView(loc, text, fp.daysText, fp.tempsText, cp.currentText, cp.tomorrowText,
                 warn.trim(), fp.popRows, cp.hourRows, cp.dayRows, level)
-    }
-
-    fun weatherText(loc: Location): String {
-        return weatherView(loc).text
     }
 
     // 気象庁予報の構造化データ
@@ -1004,31 +989,7 @@ object AegisData {
         return out
     }
 
-    // ===== 6. AEGISサーバーモード =====
-    fun briefingFromServer(baseUrl: String?): String {
-        var base = baseUrl?.trim() ?: ""
-        if (base.endsWith("/")) base = base.substring(0, base.length - 1)
-        val root = JSONObject(fetch(base + "/api/briefing"))
-        val events = root.optJSONArray("events")
-        val sb = StringBuilder()
-        sb.append("🛡️ AEGIS ブリーフィング（サーバー: ").append(base).append("）\n").append("=".repeat(48)).append("\n")
-        if (events == null || events.length() == 0) {
-            sb.append("サーバーからイベントが返りませんでした。\n")
-            return sb.toString()
-        }
-        for (i in 0 until events.length()) {
-            val ev = events.getJSONObject(i)
-            val sev = ev.optString("severity", "INFO")
-            sb.append(severityEmoji(sev)).append(" [").append(sev).append("] ").append(ev.optString("title")).append("\n")
-                .append(ev.optString("body")).append("\n")
-            val guide = ev.optString("action_guide")
-            if (guide.isNotEmpty()) sb.append("▶ 行動ガイド: ").append(guide).append("\n")
-            sb.append("-".repeat(48)).append("\n")
-        }
-        return sb.toString()
-    }
-
-    // ===== 7. 都道府県テーブル (気象庁コード・正式名称・県庁所在地) =====
+    // ===== 6. 都道府県テーブル (気象庁コード・正式名称・県庁所在地) =====
     class Pref(
         val code: String,
         val name: String,
@@ -1095,7 +1056,7 @@ object AegisData {
         return names
     }
 
-    // ===== 8. 気象レーダー (RainViewer + 地理院タイル) =====
+    // ===== 7. 気象レーダー (RainViewer + 地理院タイル) =====
     class RadarImage(
         val bitmap: android.graphics.Bitmap,
         val caption: String
@@ -1121,7 +1082,7 @@ object AegisData {
         try {
             conn.connectTimeout = 10000
             conn.readTimeout = 15000
-            conn.setRequestProperty("User-Agent", "AEGIS-Android/1.7")
+            conn.setRequestProperty("User-Agent", "AEGIS-Android/1.8")
             if (conn.responseCode != 200) throw IllegalStateException("HTTP " + conn.responseCode)
             var ins: java.io.InputStream = conn.inputStream
             if ("gzip".equals(conn.contentEncoding, ignoreCase = true)) ins = java.util.zip.GZIPInputStream(ins)
@@ -1248,7 +1209,7 @@ object AegisData {
         return RadarImage(canvas, caption)
     }
 
-    // ===== 9. 緊急地震速報 (構造化・主要動到達カウントダウン) =====
+    // ===== 8. 緊急地震速報 (構造化・主要動到達カウントダウン) =====
     class EewArea(
         val pref: String,
         val name: String,
@@ -1384,7 +1345,7 @@ object AegisData {
         return sb.toString()
     }
 
-    // ===== 10. 台風 (targetTc.json) =====
+    // ===== 9. 台風 (targetTc.json) =====
     // 台風があるときだけ表示用テキストを返す。なければ null
     fun typhoonText(): String? {
         try {
@@ -1420,7 +1381,7 @@ object AegisData {
         }
     }
 
-    // ===== 11. ニュース要約 (NHK RSS) =====
+    // ===== 10. ニュース要約 (NHK RSS) =====
     class NewsItem(
         val title: String,
         val timeText: String,
@@ -1521,7 +1482,7 @@ object AegisData {
         return if (out.size > 8) out.subList(0, 8) else out
     }
 
-    // ===== 12. 接続テスト (自己診断) =====
+    // ===== 11. 接続テスト (自己診断) =====
     // 結果1行の整形 (純粋関数)
     fun diagLine(name: String, ok: Boolean, ms: Long, reason: String?): String {
         if (ok) return "○ " + name + "：接続OK（" + ms + "ms）"
@@ -1568,7 +1529,7 @@ object AegisData {
         return lines
     }
 
-    // ===== 13. バックグラウンド同期・通知判定 =====
+    // ===== 12. バックグラウンド同期・通知判定 =====
     // 通知の対象イベント (kind: quake | tsunami | eew | warning | briefing)
     class SyncEvent(
         val kind: String,

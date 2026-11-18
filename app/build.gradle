@@ -25,6 +25,7 @@ android {
     }
 }
 
-// 外部依存なし: Android標準API (org.json / HttpURLConnection) のみで実装
+// データ取得層は Android標準API (org.json / HttpURLConnection) のみで実装。
+// UI は Jetpack Compose を使用する (方法Aの手動ビルドでは libs/ へ解決して同梱する)
 dependencies {
 }
