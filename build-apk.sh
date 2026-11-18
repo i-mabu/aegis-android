@@ -12,6 +12,7 @@
 #   * ライブラリのマニフェストはマージしない (AGP の役割)。androidx.startup 等の
 #     ライブラリ側コンポーネントは無効のままになるが、Compose UI の動作には影響しない
 # 依存ライブラリ: libs/artifacts.txt (tools/resolve.py で解決。バージョンはそちらの roots/pins)
+#   libs/ とツール jar (tools/*.jar) は .gitignore 対象のため、無い場合は冒頭で自動取得する
 # kotlin-stdlib は kotlinc 配布物 (2.0.21) を使い、libs/ 内のものは使わない
 # 必要: JDK 17+ と Android SDK (platforms;android-34, build-tools;34.0.0) と Kotlin コンパイラ
 # 使い方:
@@ -67,6 +68,24 @@ if [ -z "$KOTLINC" ]; then KOTLINC="$(command -v kotlinc || true)"; fi
 { [ -n "$KOTLINC" ] && [ -x "$KOTLINC" ]; } || { echo "kotlinc が見つかりません" >&2; exit 1; }
 STDLIB="$(dirname "$KOTLINC")/../lib/kotlin-stdlib.jar"
 [ -f "$STDLIB" ] || { echo "kotlin-stdlib.jar が見つかりません: $STDLIB" >&2; exit 1; }
+
+# ---- 依存とツール jar の自動取得 ------------------------------------------------
+# libs/ と tools/*.jar は .gitignore 対象で、CI の新規チェックアウトには存在しない。
+# 無ければここで取得する (初回のみネット必須)。手元に揃っている場合は何もしない。
+if [ ! -f libs/artifacts.txt ]; then
+  echo "[0/7] 依存を解決しています (tools/resolve.py)"
+  python3 tools/resolve.py
+fi
+if [ ! -f tools/kotlin-compose-compiler-plugin-2.0.21.jar ]; then
+  echo "[0/7] Compose コンパイラプラグインを取得しています"
+  curl -fsSL -o tools/kotlin-compose-compiler-plugin-2.0.21.jar \
+    "https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-compose-compiler-plugin/2.0.21/kotlin-compose-compiler-plugin-2.0.21.jar"
+fi
+if [ ! -f tools/r8-8.7.18.jar ]; then
+  echo "[0/7] R8 (D8) を取得しています"
+  curl -fsSL -o tools/r8-8.7.18.jar \
+    "https://dl.google.com/dl/android/maven2/com/android/tools/r8/8.7.18/r8-8.7.18.jar"
+fi
 
 BUILD=build/manual
 AARS=build/aars
