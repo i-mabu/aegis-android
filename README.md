@@ -201,3 +201,23 @@ aegis-android/
 - **ビルドパイプラインを Compose 対応に拡張**（方法A の手動ビルドを維持）: ライブラリ AAR のリソースを aapt2 で一括リンク（`--auto-add-overlay` / `--extra-packages`）、Compose コンパイラプラグインは Maven 版を使用（kotlinc 同梱版は plain kotlinc では動作しないため）、デキサは build-tools 同梱 d8 から単体 R8 8.7.18 に切替（lifecycle のクラスで同梱 d8 がクラッシュするため）、マルチデックス同梱、AAR 内 .so の手動パッケージング。ライブラリのマニフェストはマージしないため androidx.startup 等のライブラリ側初期化は無効のまま（Compose UI の動作には影響しない）
 - 単体テストは従来どおり111件全パス。versionCode 13 / versionName 1.8.0
 - ⚠️ 実機での描画確認は未実施です（この環境には実機/エミュレータがありません）。インストールして各タブの表示を確認してください
+
+## 👥 Contributors
+
+[![All Contributors](https://img.shields.io/badge/all_contributors-1-orange.svg?style=flat-square)](#contributors)
+
+<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
+<!-- prettier-ignore-start -->
+<!-- markdownlint-disable -->
+<table>
+  <tbody>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/i-mabu"><img src="https://avatars.githubusercontent.com/u/356833989?v=4?s=100" width="100px;" alt="i-mabu"/><br /><sub><b>i-mabu</b></sub></a><br /><a href="https://github.com/i-mabu/aegis-android/commits?author=i-mabu" title="Code">💻</a></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- markdownlint-restore -->
+<!-- prettier-ignore-end -->
+
+<!-- ALL-CONTRIBUTORS-LIST:END -->
